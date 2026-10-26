@@ -29,25 +29,30 @@ jobs:
   daily:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      # 两个产物路径提到 job 级，后续步骤才能拿到
-      WB_RESULT_FILE: ${{ runner.temp }}/buddy-summary.md
-      WB_RAW_FILE: ${{ runner.temp }}/buddy-raw.json
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      # 解释器路径一律现查，不写死 3.x 之类的版本号
-      - name: 解析 Python 解释器
+      # 解释器路径一律现查，不写死 3.x 之类的版本号。
+      # 产物路径走 runner 内置环境变量 RUNNER_TEMP：它本身就是 shell 里可用的变量，
+      # 不需要任何表达式；而 runner 这个 expression context 只在 step 级可用
+      # （写在 job 级 env 里会被 GitHub 判为 Invalid workflow file）。
+      - name: 解析 Python 解释器与产物路径
         run: |
           PY="$(command -v python3)"
           if [ -z "$PY" ]; then
             echo "::error::找不到 python3"
             exit 1
           fi
-          echo "PY=$PY" >> "$GITHUB_ENV"
+          # 用 printf 而非 echo：echo 在部分实现下会解释路径里的反斜杠
+          {
+            printf 'PY=%s\n' "$PY"
+            printf 'WB_RESULT_FILE=%s/buddy-summary.md\n' "$RUNNER_TEMP"
+            printf 'WB_RAW_FILE=%s/buddy-raw.json\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
           "$PY" -V
           "$PY" -c "import sys; print('解释器就绪:', sys.executable)"
+          echo "产物目录: $RUNNER_TEMP"
 
       - name: 签到 + 派猫猫 + 推飞书
         env:
