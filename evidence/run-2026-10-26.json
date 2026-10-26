@@ -1,0 +1,385 @@
+{
+  "date": "2026-10-26",
+  "endpoint": "https://copilot.tencent.com",
+  "responses": [
+    {
+      "step": "签到-状态",
+      "path": "/v2/billing/meter/checkin-activity-status",
+      "method": "POST",
+      "http": 200,
+      "body": {
+        "code": 0,
+        "msg": "OK",
+        "requestId": "5a3b1ed0-9af9-43ba-873e-2f042c642ce3",
+        "data": {
+          "active": true,
+          "today_checked_in": true,
+          "streak_days": 5,
+          "daily_credit": 100,
+          "today_credit": 100,
+          "is_streak_day": false,
+          "next_streak_day": 0,
+          "streak_bonus_days": 0,
+          "streak_bonus_credit": 0,
+          "checkin_dates": [
+            "2026-10-26",
+            "2026-10-25",
+            "2026-10-22",
+            "2026-10-21",
+            "2026-10-20"
+          ],
+          "week_checkin_days": 1,
+          "week_progress": [
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "total_credits": 500,
+          "start_time": "2026-09-30 00:00:00",
+          "end_time": "2026-12-31 23:59:59",
+          "theme_name": "Buddy加油站",
+          "season": 10,
+          "activity_name": "Buddy应用",
+          "claim_button_text": "立即领取",
+          "action_button": {
+            "show": true,
+            "text": "体验Buddy应用",
+            "action": "workbuddy://home?openBuddySwitcher=true"
+          }
+        }
+      }
+    },
+    {
+      "step": "猫猫-状态",
+      "path": "/v2/activity/growth/buddy/travel/status",
+      "method": "GET",
+      "http": 200,
+      "body": {
+        "code": 0,
+        "msg": "OK",
+        "requestId": "6423f295-c77b-4554-bef5-84a4a9f4b06c",
+        "data": {
+          "state": "arrived",
+          "buddy_id": "***",
+          "record_id": 29943661,
+          "location": {
+            "id": 1,
+            "code": "coffee",
+            "name": "咖啡馆",
+            "duration_hours": 2,
+            "cover_url": ""
+          },
+          "depart_at": 1792940042,
+          "arrive_at": 1792947242,
+          "server_now": 1792977364,
+          "letter": {
+            "id": 3,
+            "text": "亲爱的铲屎官：\n…<97 chars>",
+            "guide_text": "Buddy 帮你把研报压成 3 分钟精华了，速看"
+          },
+          "use_deeplink": "workbuddy://discover?cardId=aihot-company-tracker",
+          "daily_limit_reached": false,
+          "duration_hours": 2,
+          "reward_credit": 5
+        }
+      }
+    },
+    {
+      "step": "猫猫-领奖励",
+      "path": "/v2/activity/growth/buddy/travel/claim",
+      "method": "POST",
+      "http": 200,
+      "body": {
+        "code": 0,
+        "msg": "OK",
+        "requestId": "e9175b34-54ba-43dd-916d-56489feb9b75",
+        "data": {
+          "state": "idle",
+          "record_id": 29943661,
+          "letter": {
+            "id": 3,
+            "text": "亲爱的铲屎官：\n…<97 chars>",
+            "guide_text": "Buddy 帮你把研报压成 3 分钟精华了，速看"
+          },
+          "reward_credit": 5,
+          "use_deeplink": "workbuddy://discover?cardId=aihot-company-tracker"
+        }
+      }
+    },
+    {
+      "step": "猫猫-目的地",
+      "path": "/v2/activity/growth/buddy/travel/config",
+      "method": "GET",
+      "http": 200,
+      "body": {
+        "code": 0,
+        "msg": "OK",
+        "requestId": "31e1363c-7662-456f-b3c0-933f816d4b74",
+        "data": {
+          "locations": [
+            {
+              "id": 1,
+              "code": "coffee",
+              "name": "咖啡馆",
+              "description": "阳光、音乐和手冲咖啡的香气，是放空的好地方。",
+              "cover_url": "",
+              "duration_hours_min": 1,
+              "duration_hours_max": 4,
+              "reward_credit_min": 5,
+              "reward_credit_max": 10,
+              "sort": 1,
+              "preview_photos": [
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "街角的咖啡店招牌"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "阳光洒在咖啡桌上"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "窗边的小盆栽与拿铁"
+                }
+              ],
+              "traveling_photos": [
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "吧台一角"
+                },
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "姐姐的笔记"
+                },
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "黄昏街景"
+                }
+              ]
+            },
+            {
+              "id": 2,
+              "code": "mall",
+              "name": "商场店铺",
+              "description": "柜台、货架与穿梭的人流，藏着关于人的观察。",
+              "cover_url": "",
+              "duration_hours_min": 1,
+              "duration_hours_max": 4,
+              "reward_credit_min": 5,
+              "reward_credit_max": 10,
+              "sort": 2,
+              "preview_photos": [
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "商场中庭"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "化妆品柜台"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "橱窗展示"
+                }
+              ],
+              "traveling_photos": [
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "试用小样"
+                },
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "柜姐的推荐"
+                },
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "成分表"
+                }
+              ]
+            },
+            {
+              "id": 3,
+              "code": "gym",
+              "name": "健身房",
+              "description": "器械声、汗水与镜子里的自己。",
+              "cover_url": "",
+              "duration_hours_min": 1,
+              "duration_hours_max": 4,
+              "reward_credit_min": 5,
+              "reward_credit_max": 10,
+              "sort": 3,
+              "preview_photos": [
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "器械区"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "瑜伽垫"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "镜面墙"
+                }
+              ],
+              "traveling_photos": [
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "训练笔记"
+                },
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "论文速读"
+                },
+                {
+                  "url": "https://…<85 chars>",
+                  "title": "镜面合影"
+                }
+              ]
+            },
+            {
+              "id": 4,
+              "code": "ancient_town",
+              "name": "古镇客栈",
+              "description": "木雕、月色与老房子的呼吸。",
+              "cover_url": "",
+              "duration_hours_min": 1,
+              "duration_hours_max": 4,
+              "reward_credit_min": 5,
+              "reward_credit_max": 10,
+              "sort": 4,
+              "preview_photos": [
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "木雕窗户"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "青石板路"
+                },
+                {
+                  "url": "https://…<89 chars>",
+                  "title": "灯笼夜景"
+                }
+              ],
+              "traveling_photos": [
+                {
+                  "url": "https://…<86 chars>",
+                  "title": "茶馆一角"
+                },
+                {
+                  "url": "https://…<86 chars>",
+                  "title": "布坊晒布"
+                },
+                {
+                  "url": "https://…<86 chars>",
+                  "title": "桥边夜景"
+                }
+              ]
+            }
+          ],
+          "intro_slogans": [
+            "还在一个词一个词查字典？「多语言翻译专家」拍一下秒出，比同桌学霸还快",
+            "论文啃不动？「论文速读」5 分钟给你讲明白到底在讲啥",
+            "空降新赛道两眼一抹黑？「行业研究员」10 分钟甩你 5 条内行门道",
+            "一篇论文长到劝退？「论文速读」帮你拎出 5 个观点，摸鱼就能看完",
+            "刚转行慌得一批？「行业研究员」直接甩你 5 条野路子稳住心态",
+            "邮件写得像催命又怕社死？「长文档改稿」给你 3 种语气随便挑",
+            "设计脑子空白？「设计创意」一句话帮你出图，甲方审美也拿捏",
+            "海报灵感干涸？「品牌活动宣传海报」参考图丢进来直接出成品",
+            "会开完脑子一团浆糊？「会议决议精炼看板」3 分钟理成清单",
+            "年度总结憋不出字？「年度规划汇报 PPT」框架直接给你搭好"
+          ],
+          "intro_slogan_items": [
+            {
+              "text": "还在一个词一个词查字典？「多语言翻译专家」拍一下秒出，比同桌学霸还快",
+              "prompt": "请将以下内容翻译为 ____，保持原文语气与专业术语准确",
+              "expert_id": "ex_bF3VDwO1yg6N"
+            },
+            {
+              "text": "论文啃不动？「论文速读」5 分钟给你讲明白到底在讲啥",
+              "prompt": "请速读以下论文 PDF，输出：① 一句话核心结论 ② 5 个观点 ③ 方法/数据/局限性各 1 句",
+              "expert_id": "ex_jB0dyFIQJEWa"
+            },
+            {
+              "text": "空降新赛道两眼一抹黑？「行业研究员」10 分钟甩你 5 条内行门道",
+              "prompt": "请围绕 ____…<80 chars>",
+              "expert_id": "ex_Q89Vl704GHHa"
+            },
+            {
+              "text": "一篇论文长到劝退？「论文速读」帮你拎出 5 个观点，摸鱼就能看完",
+              "prompt": "请速读： ____ 输出 5 个观点 + 1 个值得引用的金句",
+              "expert_id": "ex_jB0dyFIQJEWa"
+            },
+            {
+              "text": "刚转行慌得一批？「行业研究员」直接甩你 5 条野路子稳住心态",
+              "prompt": "我刚转行进入 ____，请给我 5 个老炮才知道的\"野路子\"（行业黑话、潜规则、容易踩的坑）",
+              "expert_id": "ex_Q89Vl704GHHa"
+            },
+            {
+              "text": "邮件写得像催命又怕社死？「长文档改稿」给你 3 种语气随便挑",
+              "prompt": "请把以下邮件改写为 3 种语气版本：① 正式商务 ② 轻松友好 ③ 简短直接。每版保留核心信息",
+              "expert_id": "ex_9WJTqJnv6NTd"
+            },
+            {
+              "text": "设计脑子空白？「设计创意」一句话帮你出图，甲方审美也拿捏",
+              "prompt": "围绕 ____ 出一张视觉稿，风格： ____，主色： ____，要求：信息层级清晰，负空间充足",
+              "expert_id": "ex_z0IV2lLMQWDF"
+            },
+            {
+              "text": "海报灵感干涸？「品牌活动宣传海报」参考图丢进来直接出成品",
+              "prompt": "这是参考图，帮我做一张同款海报，活动主题 ____，主色 ____",
+              "expert_id": "ex_Xuyu0l69WTwt"
+            },
+            {
+              "text": "会开完脑子一团浆糊？「会议决议精炼看板」3 分钟理成清单",
+              "prompt": "以下是会议记录 ____，请精炼成「决议看板」：议题 / 决议 / 负责人 / 截止日期 / 风险。",
+              "expert_id": "ex_Rd3HoB9UBlZs"
+            },
+            {
+              "text": "年度总结憋不出字？「年度规划汇报 PPT」框架直接给你搭好",
+              "prompt": "请帮我把 ___…<78 chars>",
+              "expert_id": "ex_xagtUG00hwPD"
+            }
+          ],
+          "server_now": 1792977365
+        }
+      }
+    },
+    {
+      "step": "猫猫-派出",
+      "path": "/v2/activity/growth/buddy/travel/depart",
+      "method": "POST",
+      "http": 200,
+      "body": {
+        "code": 0,
+        "msg": "OK",
+        "requestId": "1de55cd6-afb2-4c39-b199-feb925ee3fb3",
+        "data": {
+          "state": "traveling",
+          "buddy_id": "***",
+          "record_id": 30547969,
+          "location": {
+            "id": 1,
+            "code": "coffee",
+            "name": "咖啡馆",
+            "duration_hours": 3,
+            "cover_url": ""
+          },
+          "depart_at": 1792977365,
+          "arrive_at": 1792988165,
+          "server_now": 1792977365,
+          "letter": null,
+          "use_deeplink": "",
+          "daily_limit_reached": false,
+          "duration_hours": 0,
+          "reward_credit": 0
+        }
+      }
+    }
+  ]
+}

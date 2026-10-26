@@ -1,0 +1,87 @@
+name: Buddy 加油站 · 每日签到 + 派猫猫
+
+# 每天跑一次，一次运行里把「签到」和「派猫猫」都做完。
+# cron 用 UTC：23:17 UTC = 次日 07:17（北京时间），避开 0 点刷新的抖动。
+# GitHub 的 schedule 在高峰期可能延后几分钟到十几分钟，属正常现象。
+on:
+  schedule:
+    - cron: "17 23 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "运行模式"
+        required: true
+        default: run
+        type: choice
+        options:
+          - run
+          - dry-run # 只读：只查状态，不发任何写请求
+
+permissions:
+  contents: read
+
+# 同一时间只允许一个实例，避免手动触发与定时任务撞车导致重复领取
+concurrency:
+  group: buddy-daily
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # 两个产物路径提到 job 级，后续步骤才能拿到
+      WB_RESULT_FILE: ${{ runner.temp }}/buddy-summary.md
+      WB_RAW_FILE: ${{ runner.temp }}/buddy-raw.json
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 解释器路径一律现查，不写死 3.x 之类的版本号
+      - name: 解析 Python 解释器
+        run: |
+          PY="$(command -v python3)"
+          if [ -z "$PY" ]; then
+            echo "::error::找不到 python3"
+            exit 1
+          fi
+          echo "PY=$PY" >> "$GITHUB_ENV"
+          "$PY" -V
+          "$PY" -c "import sys; print('解释器就绪:', sys.executable)"
+
+      - name: 签到 + 派猫猫 + 推飞书
+        env:
+          WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          set -o pipefail
+          if [ -z "${WB_ACCESS_TOKEN:-}" ]; then
+            echo "::error::缺少 Secret WB_ACCESS_TOKEN，请在本机运行 refresh_token.py 注入"
+            exit 2
+          fi
+          MODE="${{ inputs.mode }}"
+          if [ "$MODE" = "dry-run" ]; then
+            echo "· 只读模式：不发写请求"
+            exec "$PY" wb_auto.py --probe
+          fi
+          exec "$PY" wb_auto.py
+
+      - name: 写入运行摘要
+        if: always()
+        run: |
+          if [ -f "$WB_RESULT_FILE" ]; then
+            cat "$WB_RESULT_FILE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| 项目 | 结论 |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| 整体 | ❌ 脚本未产出结果（见上方日志） |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 留存脱敏后的原始返回
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buddy-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/buddy-raw.json
+          if-no-files-found: warn
+          retention-days: 7
