@@ -247,7 +247,7 @@ $ python selftest.py
 
 ## 八、常见问题
 
-**token 多久过期？** 客户端签发，`expiresIn=2419200` 秒（约 28 天）。看到「认证被拒（HTTP 401）」就在本机重跑一次 `refresh_token.py --gh-repo OWNER/REPO`。
+**token 多久过期？** 客户端签发，`expiresIn=2419200` 秒（约 28 天）。到期后定时任务会以「认证被拒（HTTP 401）」失败，**双击 `UpdateBuddyToken.exe` 即可**，详见第十节。
 
 **飞书没收到卡片？** 看日志里 `[飞书]` 那行，脚本会直接给出中文字段提示：
 
@@ -273,3 +273,58 @@ $ python selftest.py
 - 只覆盖签到与猫猫旅行；不含补签、连签档位兑换、盲盒、成长中心其它任务。
 - 依赖客户端私有接口，客户端升级可能改接口或改信封格式（届时 `refresh_token.py` 会明确报 `UNSUPPORTED_ENVELOPE`，而不是发无效请求）。
 - 只支持 `suite 1`（sym-v1）信封；其它格式直接报错退出。
+
+---
+
+## 十、token 到期怎么更新（双击即可）
+
+token 约 28 天过期。到期后 Actions 会失败并提示 `HTTP 401`，此时**双击 `UpdateBuddyToken.exe`** 就行 ——
+不用记命令，不用手动去网页改 Secret，也不用创建 PAT。
+
+### 双击版
+
+`UpdateBuddyToken.exe` 放在本目录。双击后它会依次做四件事，每一步都会打印结果：
+
+```
+· 1/4 从本机登录态取 accessToken
+  ✓ 已解出，长度 1319（不显示内容）
+· 2/4 从 git 凭据管理器取 GitHub 凭据
+  ✓ 已取得（账号：wqifan）
+  ✓ 凭据有效，身份：wqifan
+· 3/4 检查仓库写入权限
+  ✓ 仓库可访问：wqifan/AutoWorkbuddy（私有）
+· 4/4 写入 Secret WB_ACCESS_TOKEN
+  ✓ 已写入（旧值已被覆盖）
+```
+
+窗口会停住等你按回车，不会一闪而过。前提只有两条：**WorkBuddy 客户端处于登录状态**、
+**这台机器之前 push 过代码**（git 凭据管理器里有 GitHub 凭据）。
+
+### 为什么不需要 PAT / gh CLI
+
+写 Secret 需要 GitHub 认证。本工具直接复用 git 凭据管理器里那个 token（`gho_` 开头，OAuth App 签发），
+实测它有仓库 Admin 权限，能读 `actions/secrets/public-key` 也能写 Secret。
+所以只要你曾经 `git push` 成功过，这个工具就能用。
+
+顺带一提，Secret 的值不是明文传输的：GitHub 要求用仓库公钥做 libsodium sealed box 加密，
+本工具用 PyNaCl 完成这一步，PUT 上去的是密文。
+
+### 命令行版（同一份逻辑）
+
+```bash
+python wb_update_secret.py --check      # 只检查链路，不写入
+python wb_update_secret.py              # 更新 WB_ACCESS_TOKEN
+python wb_update_secret.py --trigger    # 更新后立刻触发一次运行
+python wb_update_secret.py --name FEISHU_WEBHOOK --value-file hook.txt
+```
+
+`--check` 会验证到「能读到公钥」为止，适合先确认权限再真正写。
+
+### 其它情况
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `取不到登录态` | WorkBuddy 客户端未登录 | 打开客户端登录后重跑 |
+| `git 凭据管理器里没有 github.com 的凭据` | 这台机器没 push 过 | 先 `git push` 一次并登录，或 `--gh-token ghp_xxx` 手动传 PAT |
+| `这个 GitHub 凭据无效` | 凭据过期/被撤销 | 重新 `git push` 触发登录 |
+| `HTTP 403` | 该账号不是仓库管理员 | 换管理员账号，或用 fine-grained PAT（需 Actions secrets 写权限） |

@@ -1,7 +1,13 @@
 # 本地临时产物
 .venv/
+.build-venv/
 __pycache__/
 *.pyc
+
+# 打包中间产物与生成的 exe（体积大，且本机已能直接跑脚本）
+build/
+dist/
+*.spec
 
 # WorkBuddy 本地工程数据，不进仓库
 .workbuddy/
@@ -16,3 +22,6 @@ run_raw.json
 workbuddy-desktop*.info
 token.txt
 *.secret
+
+# 打包生成的 exe（可随时用 .build-venv 重新生成）
+UpdateBuddyToken.exe
