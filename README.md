@@ -281,24 +281,60 @@ $ python selftest.py
 token 约 28 天过期。到期后 Actions 会失败并提示 `HTTP 401`，此时**双击 `UpdateBuddyToken.exe`** 就行 ——
 不用记命令，不用手动去网页改 Secret，也不用创建 PAT。
 
-### 双击版
+### 双击版：先体检，需要才写
 
-`UpdateBuddyToken.exe` 放在本目录。双击后它会依次做四件事，每一步都会打印结果：
+`UpdateBuddyToken.exe` 放在本目录。双击后走五步，每步都打印依据，不会闷头乱写：
 
 ```
-· 1/4 从本机登录态取 accessToken
+【1/5】读取本机登录态
   ✓ 已解出，长度 1319（不显示内容）
-· 2/4 从 git 凭据管理器取 GitHub 凭据
+  · token 有效期至 2026-11-23 12:01（还剩 28.0 天）
+
+【2/5】获取 GitHub 凭据
   ✓ 已取得（账号：wqifan）
+
+【3/5】探测网络出口
+  ✓ 可用出口：本机 127.0.0.1:10974
   ✓ 凭据有效，身份：wqifan
-· 3/4 检查仓库写入权限
-  ✓ 仓库可访问：wqifan/AutoWorkbuddy（私有）
-· 4/4 写入 Secret WB_ACCESS_TOKEN
-  ✓ 已写入（旧值已被覆盖）
+
+【4/5】检查仓库与现状
+  ✓ 仓库：wqifan/AutoWorkbuddy（私有）
+  · Secret 上次更新：2026-10-26 12:13（0.0 天前）
+  · 最近一次运行：success（2026-10-26 11:51）
+  · 本地 token 有效期至 2026-11-23 12:01（还剩 28.0 天）
+
+【5/5】更新 Secret
+  ✓ 体检结论：暂时不用更新，若想覆盖请加 --force
 ```
 
-窗口会停住等你按回车，不会一闪而过。前提只有两条：**WorkBuddy 客户端处于登录状态**、
-**这台机器之前 push 过代码**（git 凭据管理器里有 GitHub 凭据）。
+**判断依据**（三条命中任意一条就认为需要更新）：
+
+| 依据 | 判定 | 含义 |
+|---|---|---|
+| Secret 上次更新距今超过 25 天 | 需要更新 | token 生命周期是 28 天，快到了 |
+| 最近一次运行是 `failure` 且发生在 Secret 更新之后 | 需要更新 | 基本可以确定就是 401 |
+| 本地 token 剩余不足 3 天 | 需要更新 | 再不换就来不及 |
+
+都不满足时它会问一句「仍要强制覆盖吗？[y/N]」，输入 `y` 就写。
+加 `--force` 则跳过判断直接写。窗口会停住等你按回车，不会一闪而过。
+
+### 为什么不会像之前那样报 HTTP -1
+
+之前踩过一个坑：从 Git Bash 运行时，环境里带着 `https_proxy=http://127.0.0.1:10974`，
+所以能连 GitHub；但**双击 exe 从资源管理器启动时，这些变量不存在**，直连又慢又不稳，于是失败。
+
+现在工具会自己找出口，按顺序试：
+
+1. `--proxy` 参数
+2. 环境变量 `https_proxy` / `HTTPS_PROXY` / `http_proxy` / `HTTP_PROXY`
+3. exe 同目录的 `proxy.txt`（写一行代理地址，例如 `http://127.0.0.1:7890`）
+4. 本机常见代理端口（`10974`、`7890`、`7897`、`10809`、`1080`、`8080`、`8888`，先用 TCP 探测再 HTTP 验证）
+5. Windows 系统代理（读注册表 `ProxyEnable` / `ProxyServer`）
+6. 直连
+
+第一个能通的就用来做后续所有请求。全部不通时会把每个出口的失败原因列出来，而不是只报一个 `-1`。
+
+如果哪天它说「所有出口都连不上」，在 exe 同目录新建 `proxy.txt`，写一行你的代理地址即可，下次双击自动生效。
 
 ### 为什么不需要 PAT / gh CLI
 
@@ -309,22 +345,28 @@ token 约 28 天过期。到期后 Actions 会失败并提示 `HTTP 401`，此�
 顺带一提，Secret 的值不是明文传输的：GitHub 要求用仓库公钥做 libsodium sealed box 加密，
 本工具用 PyNaCl 完成这一步，PUT 上去的是密文。
 
+顺带说明「为什么能看到 token 有效期」：accessToken 是 RS256 的 JWT，`exp` 字段就是过期时间。
+工具只解 payload 读 `exp`，不做任何签名验证，也不打印 token 本体。
+
 ### 命令行版（同一份逻辑）
 
 ```bash
-python wb_update_secret.py --check      # 只检查链路，不写入
-python wb_update_secret.py              # 更新 WB_ACCESS_TOKEN
-python wb_update_secret.py --trigger    # 更新后立刻触发一次运行
+python wb_update_secret.py --check      # 只体检：报有效期、Secret 更新时间、最近运行结论
+python wb_update_secret.py              # 智能判断，需要才写
+python wb_update_secret.py --force      # 不问，直接覆盖
+python wb_update_secret.py --trigger    # 写完后立刻触发一次运行
+python wb_update_secret.py --proxy http://127.0.0.1:7890
 python wb_update_secret.py --name FEISHU_WEBHOOK --value-file hook.txt
 ```
-
-`--check` 会验证到「能读到公钥」为止，适合先确认权限再真正写。
 
 ### 其它情况
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `取不到登录态` | WorkBuddy 客户端未登录 | 打开客户端登录后重跑 |
+| `所有出口都连不上 api.github.com` | 代理没开，或端口变了 | 开代理；或在 exe 旁建 `proxy.txt` 写一行代理地址 |
 | `git 凭据管理器里没有 github.com 的凭据` | 这台机器没 push 过 | 先 `git push` 一次并登录，或 `--gh-token ghp_xxx` 手动传 PAT |
-| `这个 GitHub 凭据无效` | 凭据过期/被撤销 | 重新 `git push` 触发登录 |
-| `HTTP 403` | 该账号不是仓库管理员 | 换管理员账号，或用 fine-grained PAT（需 Actions secrets 写权限） |
+| `这个 GitHub 凭据无效（HTTP 403/401）` | 凭据过期/被撤销 | 重新 `git push` 触发登录 |
+| `这个 GitHub 凭据无效（HTTP -1）` | 其实是网络断了，不是凭据问题 | 工具会自己换出口；全都失败时看它列出的每一条原因 |
+| `本地 token 已经过期` | 客户端那次登录也过期了 | 在客户端重新登录一次，让它签发新 token |
+| `HTTP 403`（写入时） | 该账号不是仓库管理员 | 换管理员账号，或用 fine-grained PAT（需 Actions secrets 写权限） |
