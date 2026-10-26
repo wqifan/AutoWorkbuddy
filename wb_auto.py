@@ -14,6 +14,9 @@
     python wb_auto.py --probe    # 只读探测：只查状态，不发任何写请求
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import ssl
@@ -328,8 +331,21 @@ def build_card(checkin_line, travel_line, ok, day):
     }
 
 
-def push_feishu(webhook, card):
-    data = json.dumps(card).encode("utf-8")
+def feishu_sign(secret, timestamp):
+    """飞书自定义机器人的「签名校验」：HmacSHA256(key=timestamp+"\\n"+secret, msg 为空) 再 base64。"""
+    key = ("%s\n%s" % (timestamp, secret)).encode("utf-8")
+    return base64.b64encode(
+        hmac.new(key, b"", digestmod=hashlib.sha256).digest()).decode("utf-8")
+
+
+def push_feishu(webhook, card, secret=""):
+    payload = dict(card)
+    if secret:
+        # 机器人开了签名校验时，payload 里必须带 timestamp + sign
+        ts = str(int(time.time()))
+        payload["timestamp"] = ts
+        payload["sign"] = feishu_sign(secret, ts)
+    data = json.dumps(payload).encode("utf-8")
     for attempt in range(1, MAX_RETRY + 1):
         try:
             req = urllib.request.Request(webhook, data=data, method="POST",
@@ -340,8 +356,12 @@ def push_feishu(webhook, card):
             log("  [飞书] HTTP %s %s" % (resp.status, dump(body)))
             if body.get("code") == 0:
                 return True, ""
-            return False, ("飞书返回 %s：19001 多为 webhook 地址不完整；若机器人开了签名校验也会被拒。"
-                           "这是配置问题，重试无用" % body.get("code"))
+            hints = {19001: "webhook 地址不完整，或被截断",
+                     19021: "签名校验未通过：检查 FEISHU_SECRET 是否与机器人一致",
+                     19024: "关键词不匹配：机器人设了自定义关键词，卡片里没出现该词",
+                     9499: "请求体格式有误"}
+            return False, ("飞书返回 %s：%s。这是配置问题，重试无用"
+                           % (body.get("code"), hints.get(body.get("code"), "见飞书开放平台错误码")))
         except urllib.error.HTTPError as e:
             if e.code >= 500 and attempt < MAX_RETRY:
                 time.sleep(1.5 * attempt)
@@ -363,6 +383,8 @@ def main(argv):
     print_card = "--print-card" in argv[1:]
     _TOKEN = os.environ.get("WB_ACCESS_TOKEN", "").strip()
     webhook = os.environ.get("FEISHU_WEBHOOK", "").strip()
+    # 可选：机器人开了「签名校验」时才需要
+    feishu_secret = os.environ.get("FEISHU_SECRET", "").strip()
     endpoint = (os.environ.get("WB_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
 
     if not _TOKEN:
@@ -395,7 +417,7 @@ def main(argv):
         log("CARD_JSON " + json.dumps(card, ensure_ascii=False))
         return 0 if checkin_ok else 1
     if webhook and not probe:
-        push_ok, push_reason = push_feishu(webhook, card)
+        push_ok, push_reason = push_feishu(webhook, card, feishu_secret)
         log("  [飞书] %s" % ("已推送" if push_ok else "失败：" + push_reason))
 
     result = {"date": day, "probe": probe,

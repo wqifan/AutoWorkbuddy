@@ -11,6 +11,10 @@
 跑法：python selftest.py
 """
 
+import base64
+import hashlib
+import hmac
+import json
 import os
 import sys
 
@@ -73,6 +77,35 @@ DEPART_OK = (200, {"code": 0, "msg": "OK", "data": {
     "location": {"id": 1, "name": "咖啡馆", "duration_hours": 3}}})
 
 H = {"Authorization": "Bearer test"}
+
+
+def patch_urlopen(body):
+    """把飞书那一步的 HTTP 层换成假的，返回一个用来检查实际发出的 payload 的字典。"""
+
+    class FakeResp(object):
+        status = 200
+
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    captured = {}
+
+    def fake(req, timeout=None, context=None):
+        captured["url"] = req.full_url
+        captured["data"] = json.loads(req.data.decode("utf-8"))
+        return FakeResp(body)
+
+    wb_auto.urllib.request.urlopen = fake
+    return captured
 
 
 def main():
@@ -139,6 +172,34 @@ def main():
         with_http(routes)
         code = wb_auto.main(["wb_auto.py"])
         check(name, code == expected_code, "实际 %s" % code)
+
+    print("\n=== 9. 飞书推送：签名校验可选，未配置也能推 ===")
+    CARD = {"msg_type": "interactive", "card": {"elements": []}}
+    HOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/fake"
+
+    cap = patch_urlopen({"code": 0, "msg": "success"})
+    ok, _reason = wb_auto.push_feishu(HOOK, CARD)
+    check("没配 secret：不带 timestamp/sign",
+          ok and "sign" not in cap["data"] and "timestamp" not in cap["data"],
+          str(sorted(cap["data"].keys())))
+
+    cap = patch_urlopen({"code": 0, "msg": "success"})
+    secret = "test-secret-value"
+    ok, _reason = wb_auto.push_feishu(HOOK, CARD, secret)
+    ts = cap["data"].get("timestamp", "")
+    expect = base64.b64encode(hmac.new(
+        ("%s\n%s" % (ts, secret)).encode("utf-8"), b"",
+        digestmod=hashlib.sha256).digest()).decode("utf-8")
+    check("配了 secret：带 timestamp 且签名与独立复算一致",
+          ok and ts.isdigit() and cap["data"].get("sign") == expect,
+          "ts=%s sign=%s" % (ts, cap["data"].get("sign")))
+    check("卡片本体保持不变（只附加签名，不改内容）",
+          cap["data"].get("msg_type") == "interactive" and "card" in cap["data"],
+          str(sorted(cap["data"].keys())))
+
+    patch_urlopen({"code": 19021, "msg": "sign match fail"})
+    ok, reason = wb_auto.push_feishu(HOOK, CARD, secret)
+    check("19021 的提示指向 FEISHU_SECRET", (not ok) and "FEISHU_SECRET" in reason, reason)
 
     ok = sum(1 for c, _n, _d in results if c)
     print("\n%d/%d 通过" % (ok, len(results)))
