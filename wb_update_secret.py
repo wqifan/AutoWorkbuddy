@@ -289,9 +289,13 @@ class GitHub(object):
                               body={"encrypted_value": encrypted, "key_id": key["key_id"]})
         return (0, "") if st2 in (201, 204) else (st2, body.get("message", ""))
 
-    def trigger(self, repo, workflow="daily.yml"):
+    def trigger(self, repo, workflow="daily.yml", inputs=None):
+        # 注意：dispatches 只认 POST，写成 PUT 会被 GitHub 回 404（端点不存在）
+        payload = {"ref": "main"}
+        if inputs:
+            payload["inputs"] = inputs
         st, body = self.call("/repos/%s/actions/workflows/%s/dispatches" % (repo, workflow),
-                             method="PUT", body={"ref": "main"})
+                             method="POST", body=payload)
         return (0, "") if st == 204 else (st, body.get("message", ""))
 
 
@@ -525,7 +529,8 @@ def main(argv):
     ok("已写入（旧值已被覆盖）")
 
     if opt["trigger"]:
-        st, msg = gh.trigger(opt["repo"])
+        # 手动触发就是为了立刻看一眼结果，所以走 push=always（定时任务不受影响）
+        st, msg = gh.trigger(opt["repo"], inputs={"mode": "run", "push": "always"})
         if st == 0:
             ok("已触发一次运行")
             info("https://github.com/%s/actions" % opt["repo"])
