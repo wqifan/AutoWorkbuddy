@@ -1,0 +1,22 @@
+name: SCHEDULE-PROBE
+
+# 临时探针：仅用于确认 GitHub 的 schedule 触发器能否正常触发。
+# 每 5 分钟一次，只打印一行时间。验证完成后删除本文件。
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: 报告触发方式与时间
+        run: |
+          printf 'event=%s\n' "${{ github.event_name }}"
+          printf 'utc_now=%s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')"
+          printf 'schedule_expr=%s\n' "${{ github.event.schedule }}"
