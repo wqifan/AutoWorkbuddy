@@ -475,7 +475,7 @@ token 约 28 天过期。到期后 Actions 会失败并提示 `HTTP 401`，此�
 python wb_update_secret.py --check      # 只体检：报有效期、Secret 更新时间、最近运行结论
 python wb_update_secret.py              # 智能判断，需要才写
 python wb_update_secret.py --force      # 不问，直接覆盖
-python wb_update_secret.py --trigger    # 写完后立刻触发一次运行
+python wb_update_secret.py --trigger    # 写完后立刻触发一次运行（push=always，必定发一封邮件便于验证）
 python wb_update_secret.py --proxy http://127.0.0.1:7890
 python wb_update_secret.py --name FEISHU_WEBHOOK --value-file hook.txt
 ```
@@ -491,3 +491,5 @@ python wb_update_secret.py --name FEISHU_WEBHOOK --value-file hook.txt
 | `这个 GitHub 凭据无效（HTTP -1）` | 其实是网络断了，不是凭据问题 | 工具会自己换出口；全都失败时看它列出的每一条原因 |
 | `本地 token 已经过期` | 客户端那次登录也过期了 | 在客户端重新登录一次，让它签发新 token |
 | `HTTP 403`（写入时） | 该账号不是仓库管理员 | 换管理员账号，或用 fine-grained PAT（需 Actions secrets 写权限） |
+| `触发失败（HTTP 404）` | `workflow_dispatch` 端点只接受 **POST**，旧版工具误用了 PUT | 用当前版 `wb_update_secret.py` / 重打的 exe；已修 |
+| `git push` 报 `Empty reply` / `CONNECT tunnel failed, response 502` | 代理只放行了 `api.github.com`，没放行 `github.com:443` | 换代理节点；或改用 Contents API 提交（工具链里有现成脚本） |
