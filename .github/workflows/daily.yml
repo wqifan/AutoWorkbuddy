@@ -70,9 +70,14 @@ jobs:
           "$PY" -c "import sys; print('解释器就绪:', sys.executable)"
           echo "产物目录: $RUNNER_TEMP"
 
-      - name: 签到 + 派猫猫 + 推飞书
+      - name: 签到 + 派猫猫 + 推送
         env:
           WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
+          # QQ 邮箱推送：USER 与 AUTH_CODE 都填了才启用，只填一个等于没配
+          QQ_MAIL_USER: ${{ secrets.QQ_MAIL_USER }}
+          QQ_MAIL_AUTH_CODE: ${{ secrets.QQ_MAIL_AUTH_CODE }}
+          QQ_MAIL_TO: ${{ secrets.QQ_MAIL_TO }}
+          # 飞书也保留，两个都配就两边都收到
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           # 可选：飞书机器人开了「签名校验」才需要；未配置时为空字符串，不影响推送
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}

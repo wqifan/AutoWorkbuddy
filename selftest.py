@@ -267,6 +267,108 @@ def main():
         os.environ.pop("FEISHU_WEBHOOK", None)
         os.environ.pop("WB_PUSH", None)
 
+    print("\n=== 12. QQ 邮箱推送：报文、认证失败、端口回退 ===")
+    MAIL_CFG = {"user": "someone@qq.com", "auth": "abcdefghijklmnop",
+                "to": "someone@qq.com, other@qq.com", "host": "smtp.qq.com",
+                "port": 465, "from_name": "Buddy 加油站"}
+
+    sent = {}
+    state = {"fail_auth": False}
+
+    class FakeSMTP(object):
+        def __init__(self, host, port, timeout=None, context=None):
+            self.host, self.port = host, port
+            sent.setdefault("tried", []).append((host, port))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def starttls(self, context=None):
+            pass
+
+        def login(self, user, pw):
+            if state["fail_auth"]:
+                raise wb_auto.smtplib.SMTPAuthenticationError(
+                    535, b"Error: authentication failed")
+            sent["login"] = (user, pw)
+
+        def send_message(self, msg):
+            sent["msg"] = msg
+
+    class DownSMTP(object):
+        def __init__(self, host, port, timeout=None, context=None):
+            sent.setdefault("tried", []).append((host, port))
+            raise OSError("connection refused")
+
+    orig_ssl, orig_plain = wb_auto.smtplib.SMTP_SSL, wb_auto.smtplib.SMTP
+    wb_auto.smtplib.SMTP_SSL = FakeSMTP
+    wb_auto.smtplib.SMTP = FakeSMTP
+    try:
+        html = wb_auto.build_mail_html("✅ 今天已经签过了（今日 +100）", "🐱 猫猫已出发", True, "2026-10-27")
+        text = wb_auto.build_mail_text("✅ 今天已经签过了", "🐱 猫猫已出发", True, "2026-10-27")
+        ok, why = wb_auto.push_mail(MAIL_CFG, "Buddy 加油站 2026-10-27 · 签到成功", html, text)
+        msg = sent.get("msg")
+        body = msg.get_body(preferencelist=("html",)).get_content() if msg else ""
+        check("发信成功，收件人为两人", ok and msg["To"] == "someone@qq.com, other@qq.com", str(msg and msg["To"]))
+        check("主题含中文且已编码", msg is not None and "2026-10-27" in str(msg["Subject"]), str(msg and msg["Subject"]))
+        check("HTML 与纯文本两份内容都在", "【签到】" in text and "今天已经签过了" in body,
+              "html=%d 字" % len(body))
+        check("签到与猫猫分成两个区块", body.count("border-left:3px solid") == 2,
+              "区块数 %d" % body.count("border-left:3px solid"))
+        check("登录用的是授权码而不是密码", sent.get("login") == ("someone@qq.com", "abcdefghijklmnop"), "")
+
+        # 收件端视角：把发出的字节重新解析，确认中文主题/发件人/正文都没走样
+        import email as _email
+        import email.policy as _policy
+        back = _email.message_from_bytes(msg.as_bytes(), policy=_policy.default)
+        check("收件端还原后主题与发件人一致",
+              str(back["Subject"]) == "Buddy 加油站 2026-10-27 · 签到成功"
+              and str(back["From"]) == "Buddy 加油站 <someone@qq.com>",
+              "%r / %r" % (str(back["Subject"]), str(back["From"])))
+        check("收件端能同时取到 HTML 与纯文本两份",
+              back.get_body(preferencelist=("html",)) is not None
+              and back.get_body(preferencelist=("plain",)) is not None, "")
+
+        sent.clear()
+        state["fail_auth"] = True
+        ok2, why2 = wb_auto.push_mail(MAIL_CFG, "s", html, text)
+        state["fail_auth"] = False
+        check("认证失败 → 提示是授权码问题，且不重试",
+              (not ok2) and "授权码" in why2 and len(sent.get("tried", [])) == 1, why2)
+
+        sent.clear()
+        wb_auto.smtplib.SMTP_SSL = DownSMTP
+        wb_auto.smtplib.SMTP = DownSMTP
+        ok3, why3 = wb_auto.push_mail(MAIL_CFG, "s", html, text)
+        check("465 不通 → 自动换 587，两个都试过才失败",
+              (not ok3) and [p for _h, p in sent["tried"]] == [465, 587],
+              str(sent["tried"]))
+    finally:
+        wb_auto.smtplib.SMTP_SSL, wb_auto.smtplib.SMTP = orig_ssl, orig_plain
+
+    print("\n=== 13. 同时配邮箱与飞书：两个渠道都推 ===")
+    calls = []
+    orig_f, orig_m = wb_auto.push_feishu, wb_auto.push_mail
+    wb_auto.push_feishu = lambda *a, **k: (calls.append("飞书"), (True, ""))[1]
+    wb_auto.push_mail = lambda *a, **k: (calls.append("邮箱"), (True, ""))[1]
+    try:
+        os.environ["WB_ACCESS_TOKEN"] = "test-token-0123456789"
+        os.environ["FEISHU_WEBHOOK"] = "https://open.feishu.cn/open-apis/bot/v2/hook/fake"
+        os.environ["QQ_MAIL_USER"] = "someone@qq.com"
+        os.environ["QQ_MAIL_AUTH_CODE"] = "abcdefghijklmnop"
+        os.environ["WB_PUSH"] = "always"
+        with_http({wb_auto.EP_CHECKIN_STATUS: [CHECKED_IN],
+                   wb_auto.EP_TRAVEL_STATUS: [TRAVELING]})
+        wb_auto.main(["wb_auto.py"])
+        check("邮箱与飞书各推一次", sorted(calls) == sorted(["邮箱", "飞书"]), str(calls))
+    finally:
+        wb_auto.push_feishu, wb_auto.push_mail = orig_f, orig_m
+        for k in ("FEISHU_WEBHOOK", "QQ_MAIL_USER", "QQ_MAIL_AUTH_CODE", "WB_PUSH"):
+            os.environ.pop(k, None)
+
     ok = sum(1 for c, _n, _d in results if c)
     print("\n%d/%d 通过" % (ok, len(results)))
     return 0 if ok == len(results) else 1

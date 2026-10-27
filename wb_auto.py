@@ -19,11 +19,14 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import smtplib
 import ssl
 import sys
 import time
 import urllib.error
 import urllib.request
+from email.message import EmailMessage
 
 DEFAULT_ENDPOINT = "https://copilot.tencent.com"
 TIMEOUT = 20
@@ -404,16 +407,174 @@ def push_feishu(webhook, card, secret=""):
     return False, "飞书推送未完成"
 
 
+# ---------------------------------------------------------------- QQ 邮箱
+
+def _mail_section(title, content, color, bg):
+    """一块内容：左侧色条 + 标题 + 正文。邮箱客户端不认外部样式，所以全部内联。"""
+    return (
+        '<div style="border-left:3px solid %s;background:%s;border-radius:8px;'
+        'padding:12px 14px;margin-bottom:10px;">'
+        '<div style="font-size:12px;font-weight:600;color:%s;letter-spacing:.5px;">%s</div>'
+        '<div style="font-size:14px;color:#1f2937;margin-top:6px;line-height:1.65;">%s</div>'
+        '</div>' % (color, bg, color, title, content)
+    )
+
+
+def _mail_escape(text):
+    return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def build_mail_html(checkin_line, travel_line, ok, day):
+    """签到与猫猫分成两块卡片，中间留白，不混在一起。"""
+    accent = "#16a34a" if ok else "#dc2626"
+    title = "签到成功" if ok else "签到失败，需要处理"
+    ok_color, ok_bg = ("#15803d", "#f0fdf4") if ok else ("#b91c1c", "#fef2f2")
+
+    rows = _mail_section("签到", _mail_escape(checkin_line), ok_color, ok_bg)
+    rows += _mail_section("猫猫旅行", _mail_escape(travel_line), "#1d4ed8", "#eff6ff")
+
+    footer = "猫猫部分异常不影响签到结论；只要签到成功，整体即视为成功。"
+    if not ok:
+        footer = ("签到未达成，多半是 token 过期。在本机双击 UpdateBuddyToken.exe 重写 Secret 即可，"
+                  "之后再手动跑一次就能补上。")
+
+    link = ""
+    repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if repo:
+        link = ('<div style="margin-top:10px;"><a href="https://github.com/%s/actions" '
+                'style="color:#2563eb;text-decoration:none;font-size:12px;">查看运行记录 →</a></div>' % repo)
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;padding:0;">'
+        '<div style="background:#f4f5f7;padding:24px 12px;'
+        "font-family:-apple-system,'Segoe UI','Microsoft YaHei',Arial,sans-serif;\">"
+        '<div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;'
+        'border-radius:12px;overflow:hidden;">'
+        '<div style="height:4px;background:%s;"></div>'
+        '<div style="padding:20px 24px 4px 24px;">'
+        '<div style="font-size:12px;color:#6b7280;">Buddy 加油站 · 每日自动化</div>'
+        '<div style="font-size:20px;font-weight:600;color:#111827;margin-top:4px;">%s</div>'
+        '<div style="font-size:12px;color:#9ca3af;margin-top:6px;">%s · GitHub Actions 云端执行</div>'
+        '</div>'
+        '<div style="padding:16px 24px 6px 24px;">%s</div>'
+        '<div style="padding:6px 24px 20px 24px;font-size:12px;color:#9ca3af;line-height:1.7;">'
+        '%s%s</div>'
+        '</div></div></body></html>'
+        % (accent, title, day, rows, footer, link)
+    )
+
+
+def build_mail_text(checkin_line, travel_line, ok, day):
+    """纯文本版本，给不渲染 HTML 的客户端兜底。"""
+    return ("Buddy 加油站 · %s\n"
+            "结果：%s\n\n"
+            "【签到】\n%s\n\n"
+            "【猫猫旅行】\n%s\n\n"
+            "—— GitHub Actions 云端执行，猫猫异常不影响签到结论\n"
+            % (day, "签到成功" if ok else "签到失败", checkin_line, travel_line))
+
+
+def build_mail_message(cfg, subject, html, text):
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = "%s <%s>" % (cfg.get("from_name") or "Buddy 加油站", cfg["user"])
+    msg["To"] = ", ".join(_mail_recipients(cfg))
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+    return msg
+
+
+def _mail_recipients(cfg):
+    raw = cfg.get("to") or cfg.get("user") or ""
+    return [x for x in re.split(r"[,;\s]+", raw) if x]
+
+
+def push_mail(cfg, subject, html, text):
+    """用 SMTP 发一封邮件。成功返回 (True, 说明)；失败返回 (False, 原因)，绝不抛异常。"""
+    recipients = _mail_recipients(cfg)
+    if not recipients:
+        return False, "没有收件人：QQ_MAIL_TO 与 QQ_MAIL_USER 都是空的"
+
+    host = cfg.get("host") or "smtp.qq.com"
+    port = as_int(cfg.get("port")) or 465
+    # 先用 465（SSL，QQ 邮箱默认），失败再试 587（STARTTLS）
+    plans = [(host, port, "ssl")]
+    if port == 465:
+        plans.append((host, 587, "starttls"))
+
+    try:
+        msg = build_mail_message(cfg, subject, html, text)
+    except Exception as e:  # 编码类问题
+        return False, "邮件组装失败：%s: %s" % (type(e).__name__, e)
+
+    last = ""
+    for h, p, mode in plans:
+        # ① 连接阶段：只有这一阶段失败才值得换端口
+        try:
+            if mode == "ssl":
+                server = smtplib.SMTP_SSL(h, p, timeout=25,
+                                          context=ssl.create_default_context())
+            else:
+                server = smtplib.SMTP(h, p, timeout=25)
+                server.starttls(context=ssl.create_default_context())
+        except (smtplib.SMTPException, OSError) as e:
+            last = "%s:%s → %s: %s" % (h, p, type(e).__name__, e)
+            log("  [邮箱] %s:%s 连不上，换下一个端口：%s" % (h, p, last))
+            continue
+
+        # ② 认证与投递阶段：失败是配置问题，换端口也没用
+        # SMTP 是明文协议，debuglevel 会打印 AUTH 内容，所以始终保持默认级别
+        try:
+            server.login(cfg["user"], cfg["auth"])
+            server.send_message(msg)
+            log("  [邮箱] SMTP %s:%s(%s) 已投递给 %s" % (h, p, mode, ", ".join(recipients)))
+            return True, "已发送到 %s" % ", ".join(recipients)
+        except smtplib.SMTPAuthenticationError as e:
+            return False, ("SMTP 认证失败（%s %s）：QQ_MAIL_AUTH_CODE 不是 QQ 密码，"
+                           "要在 QQ 邮箱「设置 → 账户」开启 SMTP 服务后生成的 16 位授权码"
+                           % (e.smtp_code, e.smtp_error))
+        except smtplib.SMTPServerDisconnected:
+            return False, ("服务端在认证阶段主动断开（%s:%s）。QQ 对错误凭据不回 535 而直接断连，"
+                           "多半是账号不存在或授权码不对；也有可能是该账号尚未开启 SMTP 服务"
+                           % (h, p))
+        except smtplib.SMTPRecipientsRefused as e:
+            return False, "收件人被拒：%s" % (list(e.recipients.keys())[:3],)
+        except smtplib.SMTPSenderRefused:
+            return False, "发件人被拒：QQ_MAIL_USER 必须与授权码所属邮箱一致"
+        except (smtplib.SMTPException, OSError) as e:
+            return False, "投递失败（%s:%s）：%s: %s" % (h, p, type(e).__name__, e)
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
+    return False, ("SMTP 端口都连不上（%s）。GitHub Runner 会封 25 端口，465/587 正常可通，"
+                   "若两者都失败多半是本机或公司网络拦了外发邮件" % last)
+
+
 # ---------------------------------------------------------------- 主流程
 
 def main(argv):
     global _TOKEN
     probe = "--probe" in argv[1:]
     print_card = "--print-card" in argv[1:]
+    print_mail = "--print-mail" in argv[1:]
     _TOKEN = os.environ.get("WB_ACCESS_TOKEN", "").strip()
     webhook = os.environ.get("FEISHU_WEBHOOK", "").strip()
     # 可选：机器人开了「签名校验」时才需要
     feishu_secret = os.environ.get("FEISHU_SECRET", "").strip()
+    # QQ 邮箱：user + auth 都齐了才算启用
+    mail_cfg = {
+        "user": (os.environ.get("QQ_MAIL_USER") or "").strip(),
+        "auth": (os.environ.get("QQ_MAIL_AUTH_CODE") or "").strip(),
+        "to": (os.environ.get("QQ_MAIL_TO") or "").strip(),
+        "host": (os.environ.get("QQ_MAIL_HOST") or "smtp.qq.com").strip(),
+        "port": as_int(os.environ.get("QQ_MAIL_PORT")) or 465,
+        "from_name": (os.environ.get("QQ_MAIL_FROM_NAME") or "Buddy 加油站").strip(),
+    }
+    mail_on = bool(mail_cfg["user"] and mail_cfg["auth"])
     endpoint = (os.environ.get("WB_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
 
     if not _TOKEN:
@@ -440,45 +601,70 @@ def main(argv):
     checkin_line = ("✅ " if checkin_ok else "❌ ") + checkin["report"]
     travel_line = "🐱 " + (travel.get("report") or "无结论")
 
-    # 一天有多个定时时段，只有「真的做了事」的那一轮才推卡片，避免同一件事推好几遍。
-    # WB_PUSH=always 可强制每轮都推（手动验证时用）。
+    # 一天有多个定时时段，只有「真的做了事」的那一轮才推，避免同一件事推好几遍。
+    # WB_PUSH=always 可强制每轮都推（手动验证时用）；never 则完全不推。
     push_mode = (os.environ.get("WB_PUSH") or "auto").strip().lower()
-    push_ok, push_reason = None, "未配置 FEISHU_WEBHOOK，本次不推送"
     card = build_card(checkin_line, travel_line, checkin_ok, day)
+    subject = "Buddy 加油站 %s · %s" % (day, "签到成功" if checkin_ok else "签到失败")
+    mail_html = build_mail_html(checkin_line, travel_line, checkin_ok, day)
+    mail_text = build_mail_text(checkin_line, travel_line, checkin_ok, day)
+
     if print_card:
         log("CARD_JSON " + json.dumps(card, ensure_ascii=False))
+    if print_mail:
+        log("MAIL_HTML_BEGIN")
+        log(mail_html)
+        log("MAIL_HTML_END")
+    if print_card or print_mail:
         return 0 if checkin_ok else 1
-    if webhook and not probe:
-        should_push = True
+
+    # 已配置的渠道都会收到，可以同时配（邮箱 + 飞书）
+    channels = []
+    if mail_on:
+        channels.append("邮箱")
+    if webhook:
+        channels.append("飞书")
+
+    pushed = {}          # 渠道 -> (ok, 说明)
+    push_line = ""
+    if probe:
+        push_line = "— 探测模式，不推送"
+    elif not channels:
+        push_line = "— 未配置推送渠道"
+    else:
+        should_push, skip_reason = True, ""
         if push_mode == "never":
-            should_push = False
-            push_reason = "WB_PUSH=never，本次不推送"
+            should_push, skip_reason = False, "WB_PUSH=never，本次不推送"
         elif push_mode != "always":
             did_something = (checkin.get("result") == "CLAIMED"
                              or travel.get("result") == "DEPARTED")
             if checkin_ok and not did_something:
-                should_push = False
-                push_reason = "本轮没有新增动作，跳过推送（避免同一件事推多遍）"
-        if should_push:
-            push_ok, push_reason = push_feishu(webhook, card, feishu_secret)
-            log("  [飞书] %s" % ("已推送" if push_ok else "失败：" + push_reason))
+                should_push, skip_reason = False, "本轮没有新增动作，跳过推送（避免同一件事推多遍）"
+        if not should_push:
+            push_line = "— 跳过（%s）" % skip_reason
+            log("  [推送] 跳过：%s" % skip_reason)
         else:
-            log("  [飞书] 跳过：%s" % push_reason)
+            if mail_on:
+                ok_m, why_m = push_mail(mail_cfg, subject, mail_html, mail_text)
+                pushed["邮箱"] = (ok_m, why_m)
+                log("  [邮箱] %s" % ("已发送" if ok_m else "失败：" + why_m))
+            if webhook:
+                ok_f, why_f = push_feishu(webhook, card, feishu_secret)
+                pushed["飞书"] = (ok_f, why_f)
+                log("  [飞书] %s" % ("已推送" if ok_f else "失败：" + why_f))
+            push_line = " / ".join(
+                ("✅ %s" % k) if o else ("❌ %s（%s）" % (k, w))
+                for k, (o, w) in pushed.items())
 
-    # 汇总里把「未配置」「跳过」「失败」区分开，避免把跳过看成没配
-    if push_ok:
-        push_line = "✅ 已推送"
-    elif push_ok is None and webhook:
-        push_line = "— 跳过（%s）" % push_reason
-    elif push_ok is None:
-        push_line = "— 未配置 webhook"
-    else:
-        push_line = "❌ %s" % push_reason
+    push_ok = None if not pushed else all(o for o, _ in pushed.values())
+    push_reason = push_line
+    log("  [推送] %s" % push_line)
 
     result = {"date": day, "probe": probe,
               "checkin": {"ok": checkin_ok, **{k: v for k, v in checkin.items() if k != "ok"}},
               "travel": travel,
-              "push": {"ok": push_ok, "reason": push_reason},
+              "push": {"ok": push_ok, "reason": push_reason,
+                       "channels": {k: {"ok": o, "reason": w} for k, (o, w) in pushed.items()}},
               "ok": checkin_ok}
     log("RESULT_JSON " + json.dumps(result, ensure_ascii=False))
 
@@ -498,7 +684,7 @@ def main(argv):
                 f.write("| 项目 | 结论 |\n| --- | --- |\n")
                 f.write("| 签到 | %s |\n" % checkin_line)
                 f.write("| 猫猫旅行 | %s |\n" % travel_line)
-                f.write("| 飞书推送 | %s |\n" % push_line)
+                f.write("| 推送 | %s |\n" % push_line)
                 f.write("| 整体 | %s |\n" % ("✅ 成功（签到已达成）" if checkin_ok else "❌ 失败（签到未达成）"))
         except OSError as e:
             log("· 汇总写入失败：%s" % e)
