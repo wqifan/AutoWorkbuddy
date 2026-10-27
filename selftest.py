@@ -201,6 +201,72 @@ def main():
     ok, reason = wb_auto.push_feishu(HOOK, CARD, secret)
     check("19021 的提示指向 FEISHU_SECRET", (not ok) and "FEISHU_SECRET" in reason, reason)
 
+    print("\n=== 10. 一天只派一趟：上一趟出发时间落在今天就不再派 ===")
+    # 用「北京时间今天 00:30」构造，避免在零点前后跑自检时抖动
+    import calendar
+    import time as _time
+    today_bj = _time.strftime("%Y-%m-%d", _time.gmtime(_time.time() + wb_auto.BJ_OFFSET))
+    dep_today = (calendar.timegm(_time.strptime(today_bj + " 00:30", "%Y-%m-%d %H:%M"))
+                 - wb_auto.BJ_OFFSET)
+    dep_old = dep_today - 2 * 86400
+
+    arrived_today = (200, {"code": 0, "data": {
+        "state": "arrived", "record_id": 1, "reward_credit": 5,
+        "depart_at": dep_today, "arrive_at": dep_today + 3600,
+        "server_now": dep_today + 4000, "location": {"id": 1, "name": "咖啡馆"}}})
+    fake = with_http({wb_auto.EP_TRAVEL_STATUS: [arrived_today],
+                      wb_auto.EP_TRAVEL_CLAIM: [CLAIM_OK],
+                      wb_auto.EP_TRAVEL_CONFIG: [CONFIG],
+                      wb_auto.EP_TRAVEL_DEPART: [DEPART_OK]})
+    t = wb_auto.run_travel("e", H, [])
+    check("判为 DONE_TODAY", t["result"] == "DONE_TODAY", str(t))
+    check("仍领了积分，但没再派一趟",
+          wb_auto.EP_TRAVEL_CLAIM in fake.paths()
+          and wb_auto.EP_TRAVEL_DEPART not in fake.paths(), str(fake.paths()))
+
+    arrived_old = (200, {"code": 0, "data": {
+        "state": "arrived", "record_id": 1, "reward_credit": 5,
+        "depart_at": dep_old, "arrive_at": dep_old + 3600,
+        "server_now": dep_today, "location": {"id": 1, "name": "咖啡馆"}}})
+    fake = with_http({wb_auto.EP_TRAVEL_STATUS: [arrived_old],
+                      wb_auto.EP_TRAVEL_CLAIM: [CLAIM_OK],
+                      wb_auto.EP_TRAVEL_CONFIG: [CONFIG],
+                      wb_auto.EP_TRAVEL_DEPART: [DEPART_OK]})
+    t = wb_auto.run_travel("e", H, [])
+    check("上一趟是前几天的 → 正常派新一趟", t["result"] == "DEPARTED", str(t))
+
+    print("\n=== 11. 多个时段不重复推卡片 ===")
+    pushed = []
+    orig_push = wb_auto.push_feishu
+    wb_auto.push_feishu = lambda *a, **k: (pushed.append(1), (True, ""))[1]
+    try:
+        os.environ["WB_ACCESS_TOKEN"] = "test-token-0123456789"
+        os.environ["FEISHU_WEBHOOK"] = "https://open.feishu.cn/open-apis/bot/v2/hook/fake"
+        os.environ.pop("WB_PUSH", None)
+        with_http({wb_auto.EP_CHECKIN_STATUS: [CHECKED_IN],
+                   wb_auto.EP_TRAVEL_STATUS: [TRAVELING]})
+        wb_auto.main(["wb_auto.py"])
+        check("已签 + 旅行中（无新增动作）→ 不推", len(pushed) == 0, "推了 %d 次" % len(pushed))
+
+        os.environ["WB_PUSH"] = "always"
+        with_http({wb_auto.EP_CHECKIN_STATUS: [CHECKED_IN],
+                   wb_auto.EP_TRAVEL_STATUS: [TRAVELING]})
+        wb_auto.main(["wb_auto.py"])
+        check("WB_PUSH=always → 照推", len(pushed) == 1, "推了 %d 次" % len(pushed))
+
+        os.environ.pop("WB_PUSH", None)
+        with_http({wb_auto.EP_CHECKIN_STATUS: [CHECKED_IN],
+                   wb_auto.EP_TRAVEL_STATUS: [ARRIVED],
+                   wb_auto.EP_TRAVEL_CLAIM: [CLAIM_OK],
+                   wb_auto.EP_TRAVEL_CONFIG: [CONFIG],
+                   wb_auto.EP_TRAVEL_DEPART: [DEPART_OK]})
+        wb_auto.main(["wb_auto.py"])
+        check("派出新一趟 → 要推", len(pushed) == 2, "推了 %d 次" % len(pushed))
+    finally:
+        wb_auto.push_feishu = orig_push
+        os.environ.pop("FEISHU_WEBHOOK", None)
+        os.environ.pop("WB_PUSH", None)
+
     ok = sum(1 for c, _n, _d in results if c)
     print("\n%d/%d 通过" % (ok, len(results)))
     return 0 if ok == len(results) else 1

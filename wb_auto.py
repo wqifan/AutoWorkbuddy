@@ -218,6 +218,25 @@ def _fmt_signed(status, lead):
 
 # ---------------------------------------------------------------- 猫猫旅行
 
+BJ_OFFSET = 8 * 3600  # 北京时间相对 UTC 的偏移
+
+
+def _bj_date(ts):
+    """把秒级时间戳换算成北京时间日期串（YYYY-MM-DD）。"""
+    try:
+        return time.strftime("%Y-%m-%d", time.gmtime(int(ts) + BJ_OFFSET))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _bj_hm(ts):
+    """把秒级时间戳换算成北京时间 HH:MM。"""
+    try:
+        return time.strftime("%H:%M", time.gmtime(int(ts) + BJ_OFFSET))
+    except (TypeError, ValueError):
+        return "?"
+
+
 def _eta(body):
     arrive, now = as_int(dig(body, "arrive_at")), as_int(dig(body, "server_now"))
     if arrive is None or now is None:
@@ -247,6 +266,9 @@ def run_travel(endpoint, headers, raw, write=True):
     view = unwrap(body)
     state = dig(view, "state")
     limit_reached = bool(dig(view, "daily_limit_reached"))
+    # 上一趟的出发时间：派出后服务端的 daily_limit_reached 仍是 False，
+    # 所以「当天是否已经派过」只能靠这个字段判断（秒级时间戳）
+    last_depart = as_int(dig(view, "depart_at"))
 
     # ① 到家了就先领这趟的积分
     if state == "arrived":
@@ -271,7 +293,14 @@ def run_travel(endpoint, headers, raw, write=True):
         return {"result": "UNKNOWN_STATE",
                 "report": "旅行状态未识别（%s），没有做任何写操作" % state}
 
-    # ② 空闲：看今天还有没有名额，有就派一趟
+    # ② 同一趟别派两次：一天里有多个定时时段，前一个时段可能已经把猫派出去了，
+    #    猫回来得更早（旅程 1~3 小时）时状态会重新变成 idle/arrived，
+    #    这里用「上一趟的出发时间是否落在今天」兜住，保证一天只派一趟。
+    if last_depart is not None and _bj_date(last_depart) == _bj_date(time.time()):
+        notes.append("今天已经派过一趟（%s 出发），不重复派" % _bj_hm(last_depart))
+        return {"result": "DONE_TODAY", "report": "；".join(notes)}
+
+    # ③ 空闲：看今天还有没有名额，有就派一趟
     if limit_reached:
         notes.append("今天的旅行名额已经用完了")
         return {"result": "LIMIT_REACHED", "report": "；".join(notes)}
@@ -411,14 +440,40 @@ def main(argv):
     checkin_line = ("✅ " if checkin_ok else "❌ ") + checkin["report"]
     travel_line = "🐱 " + (travel.get("report") or "无结论")
 
+    # 一天有多个定时时段，只有「真的做了事」的那一轮才推卡片，避免同一件事推好几遍。
+    # WB_PUSH=always 可强制每轮都推（手动验证时用）。
+    push_mode = (os.environ.get("WB_PUSH") or "auto").strip().lower()
     push_ok, push_reason = None, "未配置 FEISHU_WEBHOOK，本次不推送"
     card = build_card(checkin_line, travel_line, checkin_ok, day)
     if print_card:
         log("CARD_JSON " + json.dumps(card, ensure_ascii=False))
         return 0 if checkin_ok else 1
     if webhook and not probe:
-        push_ok, push_reason = push_feishu(webhook, card, feishu_secret)
-        log("  [飞书] %s" % ("已推送" if push_ok else "失败：" + push_reason))
+        should_push = True
+        if push_mode == "never":
+            should_push = False
+            push_reason = "WB_PUSH=never，本次不推送"
+        elif push_mode != "always":
+            did_something = (checkin.get("result") == "CLAIMED"
+                             or travel.get("result") == "DEPARTED")
+            if checkin_ok and not did_something:
+                should_push = False
+                push_reason = "本轮没有新增动作，跳过推送（避免同一件事推多遍）"
+        if should_push:
+            push_ok, push_reason = push_feishu(webhook, card, feishu_secret)
+            log("  [飞书] %s" % ("已推送" if push_ok else "失败：" + push_reason))
+        else:
+            log("  [飞书] 跳过：%s" % push_reason)
+
+    # 汇总里把「未配置」「跳过」「失败」区分开，避免把跳过看成没配
+    if push_ok:
+        push_line = "✅ 已推送"
+    elif push_ok is None and webhook:
+        push_line = "— 跳过（%s）" % push_reason
+    elif push_ok is None:
+        push_line = "— 未配置 webhook"
+    else:
+        push_line = "❌ %s" % push_reason
 
     result = {"date": day, "probe": probe,
               "checkin": {"ok": checkin_ok, **{k: v for k, v in checkin.items() if k != "ok"}},
@@ -443,8 +498,7 @@ def main(argv):
                 f.write("| 项目 | 结论 |\n| --- | --- |\n")
                 f.write("| 签到 | %s |\n" % checkin_line)
                 f.write("| 猫猫旅行 | %s |\n" % travel_line)
-                f.write("| 飞书推送 | %s |\n" % ("✅ 已推送" if push_ok else
-                                                ("— 未配置" if push_ok is None else "❌ " + push_reason)))
+                f.write("| 飞书推送 | %s |\n" % push_line)
                 f.write("| 整体 | %s |\n" % ("✅ 成功（签到已达成）" if checkin_ok else "❌ 失败（签到未达成）"))
         except OSError as e:
             log("· 汇总写入失败：%s" % e)

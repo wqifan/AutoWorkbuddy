@@ -94,7 +94,11 @@ gh secret set FEISHU_SECRET --repo 你的用户名/你的仓库
 
 进 Actions 页签，点 **I understand my workflows, go ahead and enable them**（新建仓库一般已经是启用状态）。然后在 workflow 页面点 **Run workflow**，`mode` 选 `dry-run` 先看一遍只读结果，再选 `run` 真跑一次。
 
-两条 Secret 配好后，cron 会每天自动跑：**23:17 UTC = 次日 07:17（北京时间）**。
+两条 Secret 配好后，cron 会每天自动跑：**23:17 / 23:27 / 23:37 / 23:47 UTC = 次日 07:17~07:47（北京时间）**。
+
+> 为什么要排 4 个时间点而不是 1 个：GitHub 的 `schedule` 是「尽力而为」，不保证准点、也不保证一定执行。
+> 2026-10-27 实测就遇到整天没投递的情况（详见「十、定时没跑怎么办」）。4 个点只要有一个被投递就够了，
+> 脚本是幂等的，多跑不会多领、也不会重复推卡片。
 
 ---
 
@@ -134,6 +138,7 @@ gh secret set FEISHU_SECRET --repo 你的用户名/你的仓库
 | 猫猫在路上 | 汇报位置与到家时间，**不派** | `IN_TRIP` |
 | 猫猫空闲、名额还有 | 取 `config` 的第一个目的地，派出去 | `DEPARTED` |
 | 今日名额已用完 | 读 `daily_limit_reached`，**不派** | `LIMIT_REACHED` |
+| 上一趟出发时间在今天 | 只领积分，**不再派第二趟** | `DONE_TODAY` |
 | 401 / 403 | 提示本机重跑 `refresh_token.py` | `AUTH` |
 | 猫猫模块任何异常 | 捕获后单独汇报，**不影响签到结论** | `ERROR` |
 | 旅行状态值不认识 | 原样汇报，不做任何写操作 | `UNKNOWN_STATE` |
@@ -266,6 +271,8 @@ $ python selftest.py
 
 **cron 时间不准？** GitHub 的 `schedule` 在高峰会延后几分钟到十几分钟，属正常；脚本幂等，晚到不会多领。
 
+**某天完全没跑？** 大概率不是脚本问题，是 GitHub 没投递。判断方法与处理见下一节。
+
 ---
 
 ## 九、已知限制
@@ -273,10 +280,68 @@ $ python selftest.py
 - 只覆盖签到与猫猫旅行；不含补签、连签档位兑换、盲盒、成长中心其它任务。
 - 依赖客户端私有接口，客户端升级可能改接口或改信封格式（届时 `refresh_token.py` 会明确报 `UNSUPPORTED_ENVELOPE`，而不是发无效请求）。
 - 只支持 `suite 1`（sym-v1）信封；其它格式直接报错退出。
+- 定时触发的时间点由 GitHub 决定，不保证准点，也不保证每天都执行（见下一节）。
 
 ---
 
-## 十、token 到期怎么更新（双击即可）
+## 十、定时没跑怎么办（平台侧，实测记录）
+
+### 怎么区分「没投递」和「跑了但失败」
+
+打开仓库 Actions，看那次运行的 **event** 字段；或者直接问 API：
+
+```bash
+# 只看定时触发的运行，条数为 0 就说明根本没触发
+curl -s -H "Authorization: Bearer <你的 token>" \
+  "https://api.github.com/repos/OWNER/REPO/actions/runs?event=schedule" | grep total_count
+```
+
+- `total_count: 0` → 平台没投递，脚本一行都没执行，**不是代码问题**
+- 有记录但 `conclusion: failure` → 才需要看日志（多为 token 过期，见「十一」）
+
+### 2026-10-27 的实测记录
+
+```
+仓库        wqifan/AutoWorkbuddy（私有，非 fork，默认分支 main，state=active）
+cron        17 23 * * *
+应触发      2026-10-26T23:17Z（北京 10-27 07:17）
+实际        09:12 检查：event=schedule 的运行数 = 0，已晚 1 小时 55 分
+对照实验    另建一个 cron "*/5 * * * *" 的探针工作流，16 分钟内同样 0 次
+平台状态    githubstatus.com 显示 Actions operational
+```
+
+结论：cron 配置、仓库属性、分支、权限全部正常，是 GitHub 侧没有投递。这不是个例，
+社区里的通行结论是「schedule 是 best-effort，高峰期会延后甚至整周期丢弃，新建仓库优先级更低」，
+同期的公开讨论里也有首跑迟到 3~5 小时的记录。
+
+### 已做的加固
+
+1. **同一件事排 4 个时间点**（07:17 / 07:27 / 07:37 / 07:47）。任意一个被投递就够。
+2. **4 个点挤在 30 分钟内**：最短旅程约 1 小时，所以后几个时段必然会看到「旅行中」，不会派第二趟。
+3. **再加一道「当天已派过」判断**：服务端的 `daily_limit_reached` 在派出后仍是 `False`，
+   所以改用「上一趟的 `depart_at` 是否落在今天（北京时间）」来兜底 —— 猫回来得早、状态又变回 idle 时也不会重复派。
+4. **推送去重**：只有「真的做了事」的那一轮（签到新领到 / 派出新一趟）才发飞书卡片，
+   否则 4 个时段会推 4 条。手动验证想每次都推，`push` 选 `always`。
+5. **签到本身由服务端幂等**：`today_checked_in=true` 或 `code=10001` 都会判定为「已签」并视为成功。
+
+### 如果连着几天都没跑
+
+先用上面的 API 确认 `event=schedule` 一直是 0，然后按顺序排除：
+
+| 现象 | 检查点 |
+|---|---|
+| 一条 schedule 都没有，且新加了 workflow | 新 workflow 的 cron 需要 15~60 分钟才被识别，等一个周期再看 |
+| 私有仓库 60 天没有任何提交 | GitHub 会自动停用 schedule，随便提交一次即可恢复 |
+| 仓库是 fork 来的 | fork 默认不跑定时任务，进 Actions 点一次启用 |
+| 上述都排除了 | 属于平台/账号层面的调度问题，只能等，或改用外部定时器（见下） |
+
+**想让「几点几分一定跑」这件事有保障**，GitHub 给不了。真要保证，得用外部定时器
+（cron-job.org、Cloudflare Worker 等）定时调 `workflow_dispatch` API，把 PAT 存在对方那里。
+代价是多一个第三方持有你的凭据，所以本方案默认不用，改用多时段冗余。
+
+---
+
+## 十一、token 到期怎么更新（双击即可）
 
 token 约 28 天过期。到期后 Actions 会失败并提示 `HTTP 401`，此时**双击 `UpdateBuddyToken.exe`** 就行 ——
 不用记命令，不用手动去网页改 Secret，也不用创建 PAT。

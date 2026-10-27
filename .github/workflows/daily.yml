@@ -1,11 +1,19 @@
 name: Buddy 加油站 · 每日签到 + 派猫猫
 
 # 每天跑一次，一次运行里把「签到」和「派猫猫」都做完。
+#
 # cron 用 UTC：23:17 UTC = 次日 07:17（北京时间），避开 0 点刷新的抖动。
-# GitHub 的 schedule 在高峰期可能延后几分钟到十几分钟，属正常现象。
+#
+# 为什么排 4 个时间点：GitHub 的 schedule 是「尽力而为」，高峰期会延后甚至整天丢弃，
+# 新建仓库的优先级更低。所以同一件事请求 4 次（07:17 / 07:27 / 07:37 / 07:47），
+# 只要有一次被投递就够了。脚本本身是幂等的：
+#   · 签到：服务端 today_checked_in / code=10001 兜住，不会重复领
+#   · 派猫：服务端状态是 traveling 就跳过；已经回来过的，用「上一趟出发时间是否在今天」判断
+#   · 推送：只有「真的做了事」的那一轮才发卡片，不会一天推 4 条
+# 4 个点集中在 30 分钟内，是因为最短旅程约 1 小时 —— 后几个时段必然看到「旅行中」。
 on:
   schedule:
-    - cron: "17 23 * * *"
+    - cron: "17,27,37,47 23 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -16,6 +24,14 @@ on:
         options:
           - run
           - dry-run # 只读：只查状态，不发任何写请求
+      push:
+        description: "飞书推送策略"
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto   # 只有真的做了事才推
+          - always # 每轮都推（手动验证时用）
 
 permissions:
   contents: read
@@ -60,6 +76,8 @@ jobs:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           # 可选：飞书机器人开了「签名校验」才需要；未配置时为空字符串，不影响推送
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          # 定时触发时 inputs.push 为空 → 脚本按 auto 处理
+          WB_PUSH: ${{ inputs.push }}
         run: |
           set -o pipefail
           if [ -z "${WB_ACCESS_TOKEN:-}" ]; then
