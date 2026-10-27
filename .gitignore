@@ -25,3 +25,6 @@ token.txt
 
 # 打包生成的 exe（可随时用 .build-venv 重新生成）
 UpdateBuddyToken.exe
+
+# PyInstaller 工作目录（--workpath）
+.build-tmp/
