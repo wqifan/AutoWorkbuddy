@@ -355,104 +355,119 @@ curl -s -H "Authorization: Bearer <你的 token>" \
 - `total_count: 0` → 平台没投递，脚本一行都没执行，**不是代码问题**
 - 有记录但 `conclusion: failure` → 才需要看日志（多为 token 过期，见「十一」）
 
-### 实测记录：连续两天 8 次请求，全部落空
+### 实测记录：三天 12 次请求，全部落空
 
 ```
 仓库        wqifan/AutoWorkbuddy（私有，非 fork，默认分支 main，state=active）
             权限 enabled=true / allowed_actions=all / disabled=false / archived=false
+远端原文    cron: "17 23,0,1,2 * * *"  ← 已逐行核对，语法合法、确实在 main 上
 应触发      ① 2026-10-26T23:17Z（北京 10-27 07:17，4 个点）
             ② 2026-10-27T23:17Z（北京 10-28 07:17，4 个点）
-实际        ① 0 次  ② 0 次  →  两天共 8 次请求，event=schedule 计数始终为 0
+            ③ 2026-10-28 23:17Z（4 个点）
+实际        ①②③ 共 12 次请求，event=schedule 计数始终为 0
 对照实验    另建 cron "*/5 * * * *" 探针，连盯 50 分钟，同样 0 次
 平台状态    githubstatus.com 显示 Actions operational
-对比        workflow_dispatch 手动触发 8 次，8 次全部 success（通道本身没问题）
+对比        workflow_dispatch 手动触发 9 次，9 次全部 success（通道本身没问题）
 ```
 
-结论：cron 配置、仓库属性、分支、权限全部正常，是 **GitHub 侧没有投递**。这不是个例：
-社区通行结论是 schedule 为 best-effort，高峰期会延后甚至整周期丢弃，新建的低活跃私有仓库优先级最低。
+### 根因：免费个人账号下，私有仓库的 `schedule` 事件不投递
 
-### 已做的加固
+GitHub 社区 2026 年的确认结论（官方文档没写清楚）：
 
-1. **4 个时间点分散到 4 个不同小时**（北京 07:17 / 08:17 / 09:17 / 10:17）。
-   原先挤在 30 分钟内，整小时被丢弃就全丢；分散后是按小时独立掷骰子。
-2. **推送去重**：只有「真的做了事」的那一轮（签到新领到 / 派出新一趟）才发邮件，
-   所以一天多轮也不会收到多封。手动验证想每次都推，`push` 选 `always`。
-3. **再加一道「当天已派过」判断**：服务端的 `daily_limit_reached` 在派出后仍是 `False`，
-   所以改用「上一趟的 `depart_at` 是否落在今天（北京时间）」来兜底 —— 猫回来得早、状态又变回 idle 时也不会重复派。
-4. **签到本身由服务端幂等**：`today_checked_in=true` 或 `code=10001` 都会判定为「已签」并视为成功。
+> Scheduled workflows only run on private repos if you have a GitHub Pro plan ($4/month)
+> or if the repository is public.
+> —— [community discussion #210422](https://github.com/orgs/community/discussions/210422)
 
-### 兜底：两道外部定时器（双保险，已启用）
+也就是说：**账号是免费版 + 仓库是私有的，`on: schedule` 就是不会触发。**
+这不是配置错误，也不是网络问题。所以下面这些排查方向全部是误判，别再走一遍：
 
-GitHub 给不了「几点几分一定跑」。真要保证准点，只能由外部来喊一声。本方案用了两条腿：
+| 曾经的怀疑 | 实际情况 |
+|---|---|
+| cron 表达式写错了 / 时区算错了 | 远端原文逐行核对过，语法合法、UTC 换算正确 |
+| workflow 不在默认分支 | `default_branch=main`，文件确实在 main 上 |
+| workflow 被禁用了 | `state=active` |
+| Actions 权限被限制 | `enabled=true` / `allowed_actions=all` |
+| 60 天不活动被自动停用 | 仓库才建 2 天，不适用 |
+| 新仓库调度优先级低 | 属实，但不是主因 —— 免费账号私有仓库是**完全**不投递 |
 
-**① 本机计划任务（Windows，每天 07:20）**
+**验证方法**：新建一个**公开**仓库放同样的 cron，立刻就能被投递。
+本仓库的 `wqifan/AutoWorkbuddy-Trigger` 就是这么建的，实测通过。
+
+### 修复：公开仓库当闹钟，私有仓库当工人
+
+```
+┌─────────────────────────┐         ┌──────────────────────────────┐
+│ AutoWorkbuddy-Trigger   │  POST   │ AutoWorkbuddy（私有）        │
+│ 【公开】cron 每小时 :17  │ ──────► │ daily.yml                    │
+│ 用 TRIGGER_PAT 鉴权      │ dispatch│ → 签到 + 派猫 + 发邮件        │
+└─────────────────────────┘         └──────────────────────────────┘
+```
+
+定时器仓库 `wqifan/AutoWorkbuddy-Trigger`（公开）：
+
+| 文件 | 作用 |
+|---|---|
+| `.github/workflows/trigger.yml` | `cron: "17 * * * *"` → 调私有仓库的 `workflow_dispatch` |
+| `secrets.TRIGGER_PAT` | fine-grained PAT，仅 AutoWorkbuddy + Actions:Read and write |
+| `README.md` | 说明这个仓库是干什么的 |
+
+**为什么每小时而不是每天一次**：即使公开仓库，GitHub 的 schedule 仍是 best-effort
+（官方明说会延迟、负载高时可能整批丢弃）。每小时给 24 次机会，命中一次即可。
+私有仓库那边的 `daily.yml` 也一并改成了 `17 * * * *`，将来若升级 Pro 就直接生效。
+
+**幂等性**（敢每小时跑的前提）：
+
+1. **推送去重**：只有「真的做了事」的那一轮（签到新领到 / 派出新一趟）才发邮件，
+   一天最多一封。手动验证想每次都推，`push` 选 `always`。
+2. **「当天已派过」判断**：服务端的 `daily_limit_reached` 在派出后仍是 `False`，
+   所以改用「上一趟的 `depart_at` 是否落在今天（北京时间）」来兜底 —— 猫回来得早、
+   状态又变回 idle 时也不会重复派。
+3. **签到由服务端幂等**：`today_checked_in=true` 或 `code=10001` 都判定为「已签」并视为成功。
+
+### 兜底：本机计划任务（已注册）
+
+即使公开仓库的 cron 也被丢弃，本机这条路仍在。任务名「Buddy加油站-每日签到」，
+**5 个触发器**：
+
+- 每天 **07:20 / 12:20 / 18:20 / 21:20**
+- **登录时**（开机就补一次）
+- 勾了「错过计划开始时间就尽快启动」+「唤醒计算机执行此任务」
 
 ```powershell
-# 已注册，任务名「Buddy加油站-每日签到」，检查方式：
 Get-ScheduledTask -TaskName "Buddy加油站-每日签到" | Format-List TaskName,State
 Get-ScheduledTaskInfo -TaskName "Buddy加油站-每日签到" | Format-List LastRunTime,LastTaskResult
 ```
 
-它每天 07:20 跑 `UpdateBuddyToken.exe --only-trigger`，行为是**先查后补**：
+它跑 `UpdateBuddyToken.exe --only-trigger`，行为是**先查后补**：
 调 API 看今天有没有已经跑过（`success` 或正在 `queued/in_progress`），有就直接退出，
-没有才发一次 `workflow_dispatch`。所以它和 GitHub 自己的定时任务撞车也不会重复干活。
+没有才发一次 `workflow_dispatch`。所以它和云端定时器撞车也不会重复干活。
 
-- 勾了「错过计划开始时间就尽快启动」：早上没开机，开机后会补跑
-- 勾了「唤醒计算机执行此任务」：睡眠状态能自己醒来跑
 - 日志：`%LOCALAPPDATA%\BuddyCheckin\trigger.log`（超过 200KB 自动重置）
 - **不需要任何 PAT，也不落盘任何密码**：它复用本机 git 凭据管理器里已有的 GitHub 凭据，
   真正的 token / 授权码都只在 GitHub Secrets 里
-
-**② cron-job.org（云端，电脑关机也能跑）**
-
-配置见下一节。它和本机任务是幂等的，两边同时触发最多多跑一轮空转。
-
-### cron-job.org 配置（5 分钟）
-
-需要一个**只限本仓库、只给 Actions 写权限**的 fine-grained PAT：
-
-1. GitHub → 头像 → Settings → Developer settings → Personal access tokens →
-   **Fine-grained tokens** → Generate new token
-2. Resource owner 选 `wqifan`；Repository access 选 **Only select repositories** → `AutoWorkbuddy`
-3. Permissions → Repository permissions → **Actions: Read and write**，其余一律 `No access`
-4. 有效期建议 1 年，生成后复制（`github_pat_...`，只显示一次）
-5. 注册并登录 <https://cron-job.org>（邮箱验证即可，免费版足够）
-6. Create cronjob，按下表填：
-
-| 字段 | 值 |
-|---|---|
-| Title | Buddy 加油站补跑 |
-| URL | `https://api.github.com/repos/wqifan/AutoWorkbuddy/actions/workflows/daily.yml/dispatches` |
-| Schedule | Every day at **07:20**，Timezone 选 **Asia/Shanghai** |
-| Request method | **POST** |
-| Request body | `{"ref":"main","inputs":{"mode":"run","push":"auto"}}` |
-
-Advanced → Headers 加三条（缺一不可）：
-
-```
-Authorization: Bearer github_pat_你的令牌
-Accept: application/vnd.github+json
-Content-Type: application/json
-```
-
-7. 保存后点 **TEST RUN**，返回 **204 No Content** 就是通了（此时 Actions 会多一条
-   `event=workflow_dispatch` 的运行，属正常）
-8. cron-job.org 会在失败时发邮件告警 —— 相当于白送一个监控
-
-> 为什么值得多存一个 PAT：它被限制成只能触发这一个仓库的 workflow，读不到代码、
-> 改不了代码、看不到 Secret。就算泄露，最坏结果是别人帮你多点几次签到。
+- 附带做 **token 续期体检**：Secret 超过 25 天没更新时，自动从本机登录态重新导出并写回
+  （token 有效期约 28 天，这是防止「某天起突然全挂」的关键）
 
 ### 如果连着几天都没跑
 
-先用上面的 API 确认 `event=schedule` 一直是 0，然后按顺序排除：
+```bash
+# 看触发器有没有被投递
+curl -s -H "Authorization: Bearer <token>" \
+  "https://api.github.com/repos/wqifan/AutoWorkbuddy-Trigger/actions/runs?event=schedule" | grep total_count
+```
 
 | 现象 | 检查点 |
 |---|---|
-| 一条 schedule 都没有，且新加了 workflow | 新 workflow 的 cron 需要 15~60 分钟才被识别，等一个周期再看 |
-| 私有仓库 60 天没有任何提交 | GitHub 会自动停用 schedule，随便提交一次即可恢复 |
-| 仓库是 fork 来的 | fork 默认不跑定时任务，进 Actions 点一次启用 |
+| 触发仓库 `event=schedule` 也是 0 | 公开仓库的 cron 需 15~60 分钟才被识别，等一个周期再看 |
+| 触发仓库有 schedule，私有仓库没运行 | 私有仓库的 `daily.yml` 是不是被改了导致解析失败 |
+| 私有仓库有运行但 `failure` | 多半是 token 过期，见「十一」 |
+| 触发仓库 `failure` 且日志是 403/404 | `TRIGGER_PAT` 过期或权限不对，重新生成 |
 | 本机任务也没跑 | 看 `%LOCALAPPDATA%\BuddyCheckin\trigger.log` 最后一段的退出码 |
-| 上述都排除了 | 平台层面的调度问题，靠上面两道外部定时器兜住 |
+
+> **为什么不用 cron-job.org**：实测该站注册直接报
+> "An error occurred while creating your account"，且它的 FAQ / help / status 页全部 404
+> —— 是它自己服务端的问题，跟你的操作无关。第三方在线定时器还会多一份 PAT 落在别人手里，
+> 不如用公开 GitHub 仓库当闹钟，凭据不出 GitHub。
 
 ---
 
