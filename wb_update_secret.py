@@ -14,6 +14,10 @@
     UpdateBuddyToken.exe --check         # 只体检，不写
     UpdateBuddyToken.exe --proxy http://127.0.0.1:10974
     UpdateBuddyToken.exe --trigger       # 写完后立刻触发一次运行
+    UpdateBuddyToken.exe --only-trigger  # 什么都不写，只触发一次运行（给本机定时任务用）
+
+--only-trigger 的语义是「补跑」：先看今天云端有没有跑过，跑过就退出，没跑才触发。
+它不读本地登录态、不碰任何 Secret，所以 WorkBuddy token 过期了也照样能用。
 """
 
 import base64
@@ -201,12 +205,16 @@ def candidate_proxies(explicit):
     v = read_proxy_file()
     if v:
         add("proxy.txt", v)
-    for port in (10974, 7890, 7897, 10809, 1080, 8080, 8888):
-        if port_alive(port):
-            add("本机 127.0.0.1:%d" % port, "http://127.0.0.1:%d" % port)
+    # 系统代理优先于「猜端口」：它是用户真正设过的东西，比我瞎试端口可靠
     v = system_proxy()
     if v:
         add("Windows 系统代理", v)
+    # 端口顺序按「常见程度」排，不同客户端的默认端口差别很大，多列几个不亏。
+    # 7931 是 Clash Verge / Mihomo 的随机高位端口区间里目前见过的一个，加上它是因为
+    # 计划任务跑在没有环境变量的干净环境里，只能靠端口探测找到代理。
+    for port in (10974, 7890, 7891, 7897, 7931, 10809, 1080, 2080, 8080, 8888):
+        if port_alive(port):
+            add("本机 127.0.0.1:%d" % port, "http://127.0.0.1:%d" % port)
     add("直连（不走代理）", None)
     return out
 
@@ -375,8 +383,8 @@ def decide(secret_meta, latest_run, exp):
 
 def parse_args(argv):
     opt = {"repo": DEFAULT_REPO, "name": "WB_ACCESS_TOKEN", "check": False,
-           "trigger": False, "force": False, "proxy": "", "gh_token": "",
-           "value_file": "", "assume_yes": False}
+           "trigger": False, "only_trigger": False, "force": False, "proxy": "",
+           "gh_token": "", "value_file": "", "assume_yes": False}
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -398,6 +406,8 @@ def parse_args(argv):
             opt["check"] = True; i += 1
         elif a == "--trigger":
             opt["trigger"] = True; i += 1
+        elif a == "--only-trigger":
+            opt["only_trigger"] = True; i += 1
         elif a == "--force":
             opt["force"] = True; i += 1
         elif a in ("--yes", "-y"):
@@ -422,8 +432,147 @@ def ask_yes(question):
         return False
 
 
+def bj_today(ts):
+    """把一个 UTC 时间戳折成北京时间的日期字符串。"""
+    return time.strftime("%Y-%m-%d", time.gmtime(ts + 8 * 3600))
+
+
+class _LogTee(object):
+    """把标准输出同时写到日志文件：计划任务里没有控制台可看，得留痕。"""
+
+    def __init__(self, path):
+        self._out = sys.stdout
+        self._f = None
+        try:
+            d = os.path.dirname(path)
+            if d and not os.path.isdir(d):
+                os.makedirs(d)
+            self._f = open(path, "a", encoding="utf-8")
+        except Exception:
+            self._f = None
+        self.path = path if self._f else ""
+        # 超过 200KB 就截断，避免无限增长
+        try:
+            if self._f and os.path.getsize(path) > 200 * 1024:
+                self._f.close()
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("（日志超过 200KB，已重置）\n")
+                self._f = open(path, "a", encoding="utf-8")
+        except Exception:
+            pass
+
+    def write(self, s):
+        if self._out:
+            try:
+                self._out.write(s)
+            except Exception:
+                pass
+        if self._f:
+            try:
+                self._f.write(s)
+                self._f.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        for x in (self._out, self._f):
+            try:
+                if x:
+                    x.flush()
+            except Exception:
+                pass
+
+    def close(self):
+        if self._f:
+            try:
+                self._f.close()
+            except Exception:
+                pass
+            self._f = None
+
+
+def run_only_trigger(opt):
+    """本机定时任务入口：今天云端还没跑过就补触发一次。
+
+    刻意不读本地登录态、不碰任何 Secret —— 所以即使 WorkBuddy 客户端没登录、
+    或者 token 过期了，这条路照样能把云端跑起来。
+    """
+    wf = "daily.yml"
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    tee = _LogTee(os.path.join(base, "BuddyCheckin", "trigger.log"))
+    if tee.path:
+        sys.stdout = tee
+
+    print("\n" + "=" * 54)
+    print(" %s  定时补跑检查" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    print("=" * 54)
+    print(" 仓库：%s" % opt["repo"])
+
+    code = _do_only_trigger(opt, wf)
+    print(" 退出码：%d（日志：%s）" % (code, tee.path or "未落盘"))
+    sys.stdout = tee._out
+    tee.close()
+    return code
+
+
+def _do_only_trigger(opt, wf):
+    step("【1/3】获取 GitHub 凭据")
+    try:
+        gh_token, gh_user = (opt["gh_token"], "") if opt["gh_token"] else read_github_token()
+        ok("已取得（账号：%s）" % (gh_user or "未知"))
+    except Exception as e:
+        bad("取不到 GitHub 凭据：%s" % e)
+        info("→ 先在本目录执行一次 git push 并登录，或用 --gh-token 传 PAT")
+        return 1
+
+    step("【2/3】探测网络出口")
+    opener, label, tried = pick_outlet(opt["proxy"])
+    if opener is None:
+        bad("所有出口都连不上 api.github.com")
+        for t in tried:
+            info("  试过 %s" % t)
+        return 1
+    ok("可用出口：%s" % label)
+
+    gh = GitHub(gh_token, opener)
+    today = bj_today(time.time())
+
+    step("【3/3】检查今天是否已经跑过")
+    st, body = gh.call("/repos/%s/actions/workflows/%s/runs?per_page=20" % (opt["repo"], wf))
+    if st != 200:
+        bad("查不到运行记录（HTTP %s）：%s" % (st, body.get("message", "")))
+        return 1
+
+    hit = None
+    for r in (body.get("workflow_runs") or []):
+        ts = parse_iso(r.get("created_at") or "")
+        if not ts or bj_today(ts) != today:
+            continue
+        # 正在跑的也算数，避免和刚投递的定时任务撞车
+        if r.get("status") in ("queued", "in_progress") or r.get("conclusion") == "success":
+            hit = r
+            break
+
+    if hit:
+        ok("今天已有运行 #%s（%s / %s），不重复触发"
+           % (hit.get("run_number"), hit.get("event"),
+              hit.get("conclusion") or hit.get("status")))
+        return 0
+
+    info("今天还没跑过 → 补触发一次")
+    st, msg = gh.trigger(opt["repo"], wf, inputs={"mode": "run", "push": "auto"})
+    if st != 0:
+        bad("触发失败（HTTP %s）：%s" % (st, msg))
+        return 1
+    ok("已触发")
+    info("https://github.com/%s/actions" % opt["repo"])
+    return 0
+
+
 def main(argv):
     opt = parse_args(argv)
+    if opt["only_trigger"]:
+        return run_only_trigger(opt)
     print("=" * 54)
     print(" Buddy 加油站 · GitHub Secret 维护工具")
     print("=" * 54)
