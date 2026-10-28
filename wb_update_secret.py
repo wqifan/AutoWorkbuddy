@@ -516,7 +516,7 @@ def run_only_trigger(opt):
 
 
 def _do_only_trigger(opt, wf):
-    step("【1/3】获取 GitHub 凭据")
+    step("【1/4】获取 GitHub 凭据")
     try:
         gh_token, gh_user = (opt["gh_token"], "") if opt["gh_token"] else read_github_token()
         ok("已取得（账号：%s）" % (gh_user or "未知"))
@@ -525,7 +525,7 @@ def _do_only_trigger(opt, wf):
         info("→ 先在本目录执行一次 git push 并登录，或用 --gh-token 传 PAT")
         return 1
 
-    step("【2/3】探测网络出口")
+    step("【2/4】探测网络出口")
     opener, label, tried = pick_outlet(opt["proxy"])
     if opener is None:
         bad("所有出口都连不上 api.github.com")
@@ -537,7 +537,7 @@ def _do_only_trigger(opt, wf):
     gh = GitHub(gh_token, opener)
     today = bj_today(time.time())
 
-    step("【3/3】检查今天是否已经跑过")
+    step("【3/4】检查今天是否已经跑过")
     st, body = gh.call("/repos/%s/actions/workflows/%s/runs?per_page=20" % (opt["repo"], wf))
     if st != 200:
         bad("查不到运行记录（HTTP %s）：%s" % (st, body.get("message", "")))
@@ -557,15 +557,62 @@ def _do_only_trigger(opt, wf):
         ok("今天已有运行 #%s（%s / %s），不重复触发"
            % (hit.get("run_number"), hit.get("event"),
               hit.get("conclusion") or hit.get("status")))
-        return 0
+    else:
+        info("今天还没跑过 → 补触发一次")
+        st, msg = gh.trigger(opt["repo"], wf, inputs={"mode": "run", "push": "auto"})
+        if st != 0:
+            bad("触发失败（HTTP %s）：%s" % (st, msg))
+            return 1
+        ok("已触发")
+        info("https://github.com/%s/actions" % opt["repo"])
 
-    info("今天还没跑过 → 补触发一次")
-    st, msg = gh.trigger(opt["repo"], wf, inputs={"mode": "run", "push": "auto"})
+    # 4) 顺带体检 token：快到期就在本机续期，避免云端某天开始全挂
+    return _refresh_token_if_needed(opt, gh)
+
+
+def _refresh_token_if_needed(opt, gh):
+    """本机登录态的 token 快到期时，自动写进 GitHub Secret。
+
+    刻意做成「失败不致命」：补跑成功是主目标，续期失败只记一条，
+    下次运行还会再试，不会因为续期失败把当天签到也拖掉。
+    """
+    step("【4/4】token 有效期体检")
+    try:
+        secret, st = gh.secret_meta(opt["repo"], opt["name"])
+    except Exception as e:
+        bad("读 Secret 元信息失败：%s" % e)
+        return 0
+    if secret is None:
+        info("GitHub 上还没有 %s → 本机尝试补写一次" % opt["name"])
+    else:
+        updated = parse_iso(secret.get("updated_at", ""))
+        if updated:
+            days = (time.time() - updated) / 86400.0
+            info("Secret 上次更新：%.1f 天前" % days)
+            if days < STALE_DAYS:
+                ok("Secret 还很新（%.1f 天 < %d 天），不折腾" % (days, STALE_DAYS))
+                return 0
+
+    # 到这一步说明 Secret 旧了或不存在 → 从本机登录态取新 token
+    try:
+        value = read_workbuddy_token()
+    except Exception as e:
+        bad("取不到本机登录态：%s" % e)
+        info("→ 打开并登录 WorkBuddy 客户端后重新运行本工具，或双击 UpdateBuddyToken.exe")
+        return 0
+    exp = jwt_exp(value)
+    if exp and exp <= time.time():
+        bad("本机 token 也已过期（%s）" % fmt_ts(exp))
+        info("→ 在客户端里重新登录一次，让它签发新 token")
+        return 0
+    if exp:
+        info("本机 token 有效期至 %s（还剩 %.1f 天）"
+             % (fmt_ts(exp), (exp - time.time()) / 86400.0))
+    st, msg = gh.put_secret(opt["repo"], opt["name"], value)
     if st != 0:
-        bad("触发失败（HTTP %s）：%s" % (st, msg))
-        return 1
-    ok("已触发")
-    info("https://github.com/%s/actions" % opt["repo"])
+        bad("写入 Secret 失败（HTTP %s）：%s" % (st, msg))
+        return 0
+    ok("已把新 token 写入 GitHub Secret")
     return 0
 
 
