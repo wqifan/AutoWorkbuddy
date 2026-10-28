@@ -268,8 +268,8 @@ def main():
         os.environ.pop("WB_PUSH", None)
 
     print("\n=== 12. QQ 邮箱推送：报文、认证失败、端口回退 ===")
-    MAIL_CFG = {"user": "someone@qq.com", "auth": "abcdefghijklmnop",
-                "to": "someone@qq.com, other@qq.com", "host": "smtp.qq.com",
+    MAIL_CFG = {"user": "someone@example.com", "auth": "abcdefghijklmnop",
+                "to": "someone@example.com, other@example.com", "host": "smtp.qq.com",
                 "port": 465, "from_name": "Buddy 加油站"}
 
     sent = {}
@@ -312,13 +312,13 @@ def main():
         ok, why = wb_auto.push_mail(MAIL_CFG, "Buddy 加油站 2026-10-27 · 签到成功", html, text)
         msg = sent.get("msg")
         body = msg.get_body(preferencelist=("html",)).get_content() if msg else ""
-        check("发信成功，收件人为两人", ok and msg["To"] == "someone@qq.com, other@qq.com", str(msg and msg["To"]))
+        check("发信成功，收件人为两人", ok and msg["To"] == "someone@example.com, other@example.com", str(msg and msg["To"]))
         check("主题含中文且已编码", msg is not None and "2026-10-27" in str(msg["Subject"]), str(msg and msg["Subject"]))
         check("HTML 与纯文本两份内容都在", "【签到】" in text and "今天已经签过了" in body,
               "html=%d 字" % len(body))
         check("签到与猫猫分成两个区块", body.count("border-left:3px solid") == 2,
               "区块数 %d" % body.count("border-left:3px solid"))
-        check("登录用的是授权码而不是密码", sent.get("login") == ("someone@qq.com", "abcdefghijklmnop"), "")
+        check("登录用的是授权码而不是密码", sent.get("login") == ("someone@example.com", "abcdefghijklmnop"), "")
 
         # 收件端视角：把发出的字节重新解析，确认中文主题/发件人/正文都没走样
         import email as _email
@@ -326,7 +326,7 @@ def main():
         back = _email.message_from_bytes(msg.as_bytes(), policy=_policy.default)
         check("收件端还原后主题与发件人一致",
               str(back["Subject"]) == "Buddy 加油站 2026-10-27 · 签到成功"
-              and str(back["From"]) == "Buddy 加油站 <someone@qq.com>",
+              and str(back["From"]) == "Buddy 加油站 <someone@example.com>",
               "%r / %r" % (str(back["Subject"]), str(back["From"])))
         check("收件端能同时取到 HTML 与纯文本两份",
               back.get_body(preferencelist=("html",)) is not None
@@ -357,7 +357,7 @@ def main():
     try:
         os.environ["WB_ACCESS_TOKEN"] = "test-token-0123456789"
         os.environ["FEISHU_WEBHOOK"] = "https://open.feishu.cn/open-apis/bot/v2/hook/fake"
-        os.environ["QQ_MAIL_USER"] = "someone@qq.com"
+        os.environ["QQ_MAIL_USER"] = "someone@example.com"
         os.environ["QQ_MAIL_AUTH_CODE"] = "abcdefghijklmnop"
         os.environ["WB_PUSH"] = "always"
         with_http({wb_auto.EP_CHECKIN_STATUS: [CHECKED_IN],
