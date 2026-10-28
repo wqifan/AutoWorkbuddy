@@ -24,6 +24,7 @@ PS_TEMPLATE = r'''
 $ErrorActionPreference = "Stop"
 $name = "{name}"
 $exe  = "{exe}"
+$exe2 = "{exe2}"
 $dir  = "{dir}"
 
 {tasks}
@@ -51,11 +52,15 @@ $logon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $logon.Delay = "PT2M"
 
 $action = New-ScheduledTaskAction -Execute $exe -Argument "--local" -WorkingDirectory $dir
+# 第二个动作：补跑云端 + 顺带体检 token。
+# 云端（Cloudflare → GitHub Actions）那条链路的 WB_ACCESS_TOKEN 存在仓库 Secret 里，
+# 会过期；电脑开着的时候顺手续期，云端那条链路才不会某天突然全挂。
+$action2 = New-ScheduledTaskAction -Execute $exe2 -Argument "--only-trigger --no-pause" -WorkingDirectory $dir
 $set = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
   -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 10)
 
-Register-ScheduledTask -TaskName $name -Action $action -Trigger @($rep, $logon) `
+Register-ScheduledTask -TaskName $name -Action @($action, $action2) -Trigger @($rep, $logon) `
   -Settings $set -Description "{desc}" -Force | Out-Null
 '''
 
@@ -72,6 +77,7 @@ def ps_quote(s):
 def run_ps(body):
     ps = PS_TEMPLATE.format(name=ps_quote(TASK_NAME),
                              exe=ps_quote(os.path.join(HERE, "BuddyCheckin.exe")),
+                             exe2=ps_quote(os.path.join(HERE, "UpdateBuddyToken.exe")),
                              dir=ps_quote(HERE),
                              tasks=body.replace("{desc}", TASK_DESC))
     with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False,

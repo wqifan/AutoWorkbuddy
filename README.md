@@ -504,6 +504,48 @@ Get-Content "$env:LOCALAPPDATA\BuddyCheckin\local.log" -Tail 30
 > "An error occurred while creating your account"，且它的 FAQ / help / status 页全部 404
 > —— 是它自己服务端的问题，跟操作无关。
 
+### Cloudflare Worker 已部署（2026-10-28）
+
+不再只是"备好代码"，已经**实际部署上线**：
+
+| 项 | 值 |
+|---|---|
+| Worker 名 | `buddy-trigger` |
+| 地址 | `https://buddy-trigger.852645480.workers.dev` |
+| Cron | `*/5 * * * *`（UTC） |
+| Secret | `GH_PAT`、`TRIGGER_KEY`（均已注入） |
+| 配置目录 | `cloudflare-worker/`（`wrangler.jsonc` + `buddy-trigger.js`） |
+
+**不用在网页上找 "Create Worker" 按钮** —— Cloudflare 改版后那个入口已经变成
+`Workers & Pages` → `Create application` → `Create Worker`，藏在二级菜单里，
+很容易找不到。直接用命令行部署更快：
+
+```bash
+cd cloudflare-worker
+npx wrangler login          # 浏览器点一下授权即可
+npx wrangler deploy         # 部署（cron 会一起生效）
+npx wrangler secret put GH_PAT      # 填 GitHub 凭据
+```
+
+**关于 `GH_PAT` 填什么**：实测本机 git credential 里那个 OAuth token
+（scope = `gist, repo, workflow`）**权限已经足够触发 dispatch**，不需要另外去
+GitHub 设置页造 fine-grained PAT。填它就行。
+
+**手动触发一次**（不等到 cron）：
+
+```bash
+curl -H "X-Trigger-Key: $(cat cloudflare-worker/.trigger_key)" \
+     https://buddy-trigger.852645480.workers.dev/
+```
+
+> ⚠️ 本机网络可能访问不通 `*.workers.dev`（实测超时），
+> 但 **cron 是 Cloudflare 内部调度，不经本机网络**，所以定时触发不受影响。
+> 手动触发若连不上，就直接用 `UpdateBuddyToken.exe --only-trigger` 走 GitHub 那条路。
+
+**已知坑**：新建 Worker 的 cron 触发**可能要等很久才开始投递** ——
+Cloudflare 文档写"最多 15 分钟"，但社区实测有接近 **3 小时**才首次触发的案例。
+所以刚部署完看不到动静是正常的，别急着判定失败。
+
 ### 如果某天没跑
 
 | 现象 | 检查点 |

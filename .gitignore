@@ -28,3 +28,12 @@ UpdateBuddyToken.exe
 
 # PyInstaller 工作目录（--workpath）
 .build-tmp/
+
+# Cloudflare Worker 的手动触发口令（等同于一个开放入口的钥匙，绝不进仓库）
+.trigger_key
+
+# wrangler 本地状态目录（含账号相关缓存）
+.wrangler/
+
+# 打包中间目录（另一个 --workpath）
+.build-tmp2/
