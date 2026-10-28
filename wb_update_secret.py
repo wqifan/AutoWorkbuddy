@@ -59,6 +59,14 @@ except ImportError as _e:  # pragma: no cover
 
 import refresh_token as rt
 
+# 打包成 exe 时，被 import 的模块可能不在源码目录，需要补上 _MEIPASS
+if hasattr(sys, "_MEIPASS"):
+    sys.path.insert(0, sys._MEIPASS)
+
+# 打包成 exe 时，wb_auto 不会被一起带进来（它不是入口脚本）。
+# 所以这里直接内联「本机执行」需要的最小逻辑，避免 exe 依赖外部文件。
+WB_LOCAL_ENDPOINT = "https://copilot.tencent.com"
+
 DEFAULT_REPO = "wqifan/AutoWorkbuddy"
 API = "https://api.github.com"
 UA = "wb-update-secret"
@@ -384,7 +392,8 @@ def decide(secret_meta, latest_run, exp):
 def parse_args(argv):
     opt = {"repo": DEFAULT_REPO, "name": "WB_ACCESS_TOKEN", "check": False,
            "trigger": False, "only_trigger": False, "force": False, "proxy": "",
-           "gh_token": "", "value_file": "", "assume_yes": False}
+           "gh_token": "", "value_file": "", "assume_yes": False,
+           "local": False, "setup_mail": False, "probe": False}
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -408,6 +417,15 @@ def parse_args(argv):
             opt["trigger"] = True; i += 1
         elif a == "--only-trigger":
             opt["only_trigger"] = True; i += 1
+        elif a == "--local":
+            opt["local"] = True; i += 1
+        elif a == "--setup-mail":
+            opt["setup_mail"] = True; i += 1
+        elif a == "--probe":
+            opt["probe"] = True; i += 1
+        elif a in ("--user", "--auth-code", "--to"):
+            # 供 --setup-mail 透传使用，这里只吃掉参数值
+            i += 2
         elif a == "--force":
             opt["force"] = True; i += 1
         elif a in ("--yes", "-y"):
@@ -447,7 +465,9 @@ class _LogTee(object):
             d = os.path.dirname(path)
             if d and not os.path.isdir(d):
                 os.makedirs(d)
-            self._f = open(path, "a", encoding="utf-8")
+            # utf-8-sig：写 BOM，Windows 的记事本 / Get-Content 才能正确识别中文，
+            # 否则默认按 GBK 解码会显示成乱码。
+            self._f = open(path, "a", encoding="utf-8-sig")
         except Exception:
             self._f = None
         self.path = path if self._f else ""
@@ -455,9 +475,9 @@ class _LogTee(object):
         try:
             if self._f and os.path.getsize(path) > 200 * 1024:
                 self._f.close()
-                with open(path, "w", encoding="utf-8") as f:
+                with open(path, "w", encoding="utf-8-sig") as f:
                     f.write("（日志超过 200KB，已重置）\n")
-                self._f = open(path, "a", encoding="utf-8")
+                self._f = open(path, "a", encoding="utf-8-sig")
         except Exception:
             pass
 
@@ -616,8 +636,56 @@ def _refresh_token_if_needed(opt, gh):
     return 0
 
 
+def run_local(opt):
+    """本机直接执行：签到 + 派猫 + 发邮件，不依赖 GitHub 调度。
+
+    背景：实测这个 GitHub 账号（个人账号）的 schedule 事件整体不投递，
+    公开/私有都试过。GitHub 这条路走不通，就干脆把活干在本机。
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    tee = _LogTee(os.path.join(base, "BuddyCheckin", "local.log"))
+    if tee.path:
+        sys.stdout = tee
+
+    print("\n" + "=" * 54)
+    print(" %s  本机执行" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    print("=" * 54)
+
+    try:
+        import wb_local
+    except Exception as e:
+        bad("加载 wb_local 失败：%s: %s" % (type(e).__name__, e))
+        info("→ 源码运行时确认 wb_local.py 在同目录；exe 版请重新打包")
+        sys.stdout = tee._out
+        tee.close()
+        return 4
+    args = ["wb_local.py"]
+    if opt.get("probe"):
+        args.append("--probe")
+    try:
+        code = wb_local.main(args)
+    except Exception as e:
+        bad("本机执行异常：%s: %s" % (type(e).__name__, e))
+        code = 5
+
+    print(" 退出码：%d（日志：%s）" % (code, tee.path or "未落盘"))
+    sys.stdout = tee._out
+    tee.close()
+    return code
+
+
 def main(argv):
     opt = parse_args(argv)
+    if opt["local"]:
+        return run_local(opt)
+    if opt["setup_mail"]:
+        try:
+            import wb_local
+        except Exception as e:
+            print("加载 wb_local 失败：%s: %s" % (type(e).__name__, e))
+            return 4
+        # 把 --user / --auth-code / --to 原样透传下去
+        return wb_local.setup_mail(argv)
     if opt["only_trigger"]:
         return run_only_trigger(opt)
     print("=" * 54)
