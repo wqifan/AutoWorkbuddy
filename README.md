@@ -431,34 +431,29 @@ curl -s -H "Authorization: Bearer <token>" \
 对比        workflow_dispatch 手动触发 10 次，10 次全部 success（通道本身没问题）
 ```
 
-### 根因：个人账号（type=User）的 `schedule` 事件不投递
+### ⚠️ 根因（2026-10-28 已修正）
 
-**决定性对照实验**：
+最初判断是「个人账号（type=User）的 `schedule` 事件不投递」——
+依据是连续 3 天、12 次 cron 请求全部零命中，而 `push` 与 `workflow_dispatch` 全部正常。
 
-| 仓库 | 账号类型 | schedule 运行数 | 最近一次 |
-|---|---|---|---|
-| `nodejs/node` | **Organization** | 2500 | 2026-10-28T04:59Z ✅ |
-| `facebook/react` | **Organization** | 2500 | 2026-10-28T05:09Z ✅ |
-| `rust-lang/rust` | **Organization** | 469 | 2026-10-28T00:00Z ✅ |
-| `microsoft/vscode` | **Organization** | 143 | 2026-10-27T05:28Z ✅ |
-| `wqifan/AutoWorkbuddy` | **User（个人）** | 0 | — ❌ |
-| `wqifan/AutoWorkbuddy-Trigger`（新建公开仓库） | **User（个人）** | 0 | — ❌ |
+**但 2026-10-28 08:28:43Z 出现了第一条 `event=schedule` 的运行（success）**，
+相对 cron `17 * * * *` 延迟约 11 分钟。
 
-GitHub 调度器**本身完全正常**（大仓库 5 分钟前刚跑过），但**个人账号的 `schedule` 事件整体不投递** ——
-公开也好、私有也好、fork 与否，都一样。
+**所以真正的结论是：`schedule` 属于「极不稳定」，而不是「完全不投递」。**
+它偶尔会投、常常不投，语法从来没错，是平台侧投递不可靠。
 
-社区结论（[discussion #210422](https://github.com/orgs/community/discussions/210422)）只说了
-「私有仓库需 Pro 或改公开」，改公开后仍不投递 → 真实原因更深一层，是**账号类型**。
+这个反转恰好说明**多路冗余是必要的**，而不是「找到唯一根因就万事大吉」：
 
-> 排查这类问题时的**无效方向**（都核对过，没问题）：
-> cron 表达式语法、UTC 时区换算、workflow 是否在默认分支、`state=active`、
-> `enabled=all`、60 天不活动规则、fork 规则。
-> 这些都会让人以为「配置对了就该跑」，从而在错误方向上耗掉一整天。
+| 通路 | 角色 | 状态 |
+|---|---|---|
+| 本机 Windows 计划任务 | **主** | 每小时 + 登录触发，电脑开着必跑到 |
+| Cloudflare Worker | 兜底 | 独立于 GitHub 的外部闹钟 |
+| GitHub `schedule` | 补充 | 现在偶尔也会投，但别指望它 |
 
-**10 分钟出结论的验证方法**：在任一仓库放一个只 `echo` 的空跑探针
-（`cron: "*/5 * * * *"`，零成本零副作用），静置 10~40 分钟看 `event=schedule` 计数；
-同时对照 `push` / `workflow_dispatch` 是否正常 —— 后两者正常而 schedule 为 0，
-就是平台不投递，别再改配置了。
+> 排查新仓库定时任务时，先用 `*/5` 空跑探针 + 对照 `push`，10 分钟内就能分清
+> 「配置错」与「平台不投递」；但**「平台不投递」这个结论本身要保留余地** ——
+> 它可能只是推迟几个小时甚至几天才来。
+
 
 ### 现状与方案
 

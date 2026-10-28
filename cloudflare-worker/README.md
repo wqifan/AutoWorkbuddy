@@ -94,22 +94,43 @@ curl https://buddy-trigger.852645480.workers.dev/health
 | 私有仓库有运行但 `failure` | 多半是 `WB_ACCESS_TOKEN` 过期，跑一次 `UpdateBuddyToken.exe` 续期 |
 | 定时器没触发 | **可能只是还没到首次调度时间**，见下 |
 
-## ⚠️ 两个已知坑
+## 已知坑
 
 ### 1. 新建 Worker 的 cron 可能很久才开始投递
 
-Cloudflare 文档说 cron 变更"最多 15 分钟生效"，但**社区实测有接近 3 小时
-才首次触发的案例**（同一个 Free 账号上连发三个探针 Worker，前两个都被
-"等不及"删掉了，第三个留了 2 小时 50 分钟才开始跑）。
+Cloudflare 文档说 cron 变更最多 15 分钟生效，但**实测部署后约 1 小时 53 分钟
+才出现第一次投递迹象**，社区还有**接近 3 小时**才首次触发的案例。
 
 所以：**刚部署完看不到动静是正常的，别急着判定失败。**
-本仓库留了一个观察脚本：
+本仓库留了两个观察脚本：
 
 ```bash
-./.build-venv/Scripts/python.exe watch_cloudflare_cron.py 240   # 观察 4 小时
+./.build-venv/Scripts/python.exe watch_cloudflare_cron.py 240   # 验证 Cloudflare 链路
+./.build-venv/Scripts/python.exe watch_schedule.py 180         # 验证 GitHub schedule 链路
 ```
 
-### 2. 本机可能访问不通 `*.workers.dev`
+### 2. GitHub `schedule` 不是「不投递」，是「极不稳定」
+
+这是 2026-10-28 的**反转发现**，推翻了此前「账号级不投递」的判断：
+
+| 时间 (UTC) | 事件 | 结论 |
+|---|---|---|
+| 10-26 ~ 10-28 06:27 | 连续 12 次 cron 请求**全部落空** | 当时判定为「完全不投递」 |
+| **10-28 08:28:43** | **`event=schedule`，success** | **它其实会投**，只是延迟巨大 |
+
+相对 cron `17 * * * *` 延迟了约 **11 分钟**。
+
+**怎么区分是哪条链路触发的** —— 看 `event` 字段：
+
+| `event` | 含义 |
+|---|---|
+| `schedule` | GitHub 自己的 cron 投递的 |
+| `workflow_dispatch` | 外部调用 dispatch 端点（Cloudflare Worker / 本机脚本） |
+
+**结论**：schedule 属于「偶尔能投、常常不投」。
+**这正是必须多路冗余的原因** —— 本机计划任务（主）+ Cloudflare Worker（兜底）。
+
+### 3. 本机可能访问不通 `*.workers.dev`
 
 实测本机直连和走代理都超时。**这不影响 cron 触发** ——
 cron 是 Cloudflare 内部调度，不经本机网络。
