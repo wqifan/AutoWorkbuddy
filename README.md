@@ -13,14 +13,37 @@
 ## 一、项目结构
 
 ```
-wb_auto.py                    云端执行主体：签到、领旅行积分、派出、发邮件（+ 可选飞书）
-refresh_token.py              本机一次性操作：读登录态 → 解信封 → 写入 Secret
-wb_update_secret.py           本机工具：先体检再决定要不要重写 token（可打包成 exe）
+wb_auto.py                    执行主体：签到、领旅行积分、派出、发邮件（+ 可选飞书）
+wb_local.py                   本机执行器：不依赖 GitHub，直接在本机做完上面这些事
+refresh_token.py              读登录态 → 解信封 → 导出 token
+wb_update_secret.py           工具箱：体检/更新 Secret、触发云端、本机执行（可打包成 exe）
 selftest.py                   离线自检（假响应，不打网络），36 条断言
-.github/workflows/daily.yml   cron 定义与执行步骤
+setup_local_task.py           把本机执行器注册成 Windows 计划任务
+.github/workflows/daily.yml   云端 workflow 定义
 evidence/run-2026-10-26.json  一次真实运行的脱敏原始返回
 evidence/mail-preview.html    邮件正文样式预览（可直接用浏览器打开）
+cloudflare-worker/            备选：云端定时器（Cloudflare Workers），当 GitHub 定时不可用时用
 ```
+
+### 两条通路
+
+```
+                        ┌──────────────────────────────────────────┐
+   通路 A（本机，推荐）  │  Windows 计划任务（每小时 + 每次登录）    │
+                        │    → BuddyCheckin.exe                    │
+                        │    → 读本机登录态拿 token                 │
+                        │    → 直接调 WorkBuddy 接口签到 + 派猫    │
+                        │    → 本机 SMTP 发邮件                     │
+                        │  不经过 GitHub，不需要任何 PAT           │
+                        └──────────────────────────────────────────┘
+
+                        ┌──────────────────────────────────────────┐
+   通路 B（云端，备用）  │  GitHub Actions（workflow_dispatch）      │
+                        │    → wb_auto.py + Secrets 注入的 token    │
+                        │  需要电脑关机时也能跑                      │
+                        └──────────────────────────────────────────┘
+
+两条通路都幂等，同时存在不会重复领积分、不会一天推好几封邮件。
 
 ---
 
@@ -47,6 +70,48 @@ evidence/mail-preview.html    邮件正文样式预览（可直接用浏览器�
 ---
 
 ## 三、部署（约 5 分钟）
+
+### 0. 本机直跑（推荐，最省事）
+
+如果你只是想「每天自动签到 + 收到邮件」，**不需要建仓库、不需要配 Secret** ——
+本机直接做完所有事：
+
+```bash
+# 1) 配置邮箱（只需要做一次）
+python wb_local.py --setup-mail
+#   或者把授权码直接传进去（注意会留在 shell 历史里，交互式更安全）：
+#   python wb_local.py --setup-mail --user 你的QQ邮箱 --auth-code 你的16位授权码
+
+# 2) 试跑一次
+python wb_local.py
+
+# 3) 注册成开机自启的定时任务
+python setup_local_task.py
+```
+
+`setup_local_task.py` 注册的任务名是「Buddy加油站-每日签到」，
+**每小时跑一次 + 每次登录时跑一次**，执行 `BuddyCheckin.exe --local`。
+
+它做的事：
+
+1. 从 WorkBuddy 客户端登录态解出 accessToken（**每次都重新取**，所以不会过期）
+2. 调 WorkBuddy 接口签到 + 派猫猫
+3. 用本机 SMTP 把结果发到你邮箱
+
+**为什么每次都重新取 token**：token 有效期约 28 天。之前靠 GitHub Secret 存着，
+过期了得手动更新；现在每次运行现取，这个隐患直接消失。
+
+登录态拿不到时（比如客户端没登录）任务会记一条日志然后退出，不影响下个周期。
+
+```
+日志：%LOCALAPPDATA%\BuddyCheckin\local.log
+配置：%LOCALAPPDATA%\BuddyCheckin\config.json   （含邮箱授权码，仅本机可读）
+```
+
+> 下面 1~6 节讲的是**云端方案**（GitHub Actions）。
+> 只有在「电脑关机也要跑」时才需要它 —— 但实测这个 GitHub 账号的
+> `schedule` 事件整体不投递（见第十节），所以云端方案需要额外接一个外部定时器。
+> 日常用的话，**上面的本机直跑就够了**。
 
 ### 1. 建仓库并上传
 
@@ -344,16 +409,11 @@ $ python selftest.py
 
 ### 怎么区分「没投递」和「跑了但失败」
 
-打开仓库 Actions，看那次运行的 **event** 字段；或者直接问 API：
-
 ```bash
 # 只看定时触发的运行，条数为 0 就说明根本没触发
-curl -s -H "Authorization: Bearer <你的 token>" \
-  "https://api.github.com/repos/OWNER/REPO/actions/runs?event=schedule" | grep total_count
+curl -s -H "Authorization: Bearer <token>" \
+  "https://api.github.com/repos/wqifan/AutoWorkbuddy/actions/runs?event=schedule" | grep total_count
 ```
-
-- `total_count: 0` → 平台没投递，脚本一行都没执行，**不是代码问题**
-- 有记录但 `conclusion: failure` → 才需要看日志（多为 token 过期，见「十一」）
 
 ### 实测记录：三天 12 次请求，全部落空
 
@@ -365,121 +425,93 @@ curl -s -H "Authorization: Bearer <你的 token>" \
             ② 2026-10-27T23:17Z（北京 10-28 07:17，4 个点）
             ③ 2026-10-28 23:17Z（4 个点）
 实际        ①②③ 共 12 次请求，event=schedule 计数始终为 0
-对照实验    另建 cron "*/5 * * * *" 探针，连盯 50 分钟，同样 0 次
+对照实验    另建 cron "*/5 * * * *" 空跑探针，连盯 40 分钟（跨 8 个点），同样 0 次
+            又在新公开仓库上放同类探针，同样 0 次
 平台状态    githubstatus.com 显示 Actions operational
 对比        workflow_dispatch 手动触发 10 次，10 次全部 success（通道本身没问题）
 ```
 
-### 根因：个人账号的 `schedule` 事件不投递（公开也不行）
+### 根因：个人账号（type=User）的 `schedule` 事件不投递
 
-GitHub 社区 2026 年的确认结论：
+**决定性对照实验**：
 
-> Scheduled workflows only run on private repos if you have a GitHub Pro plan ($4/month)
-> or if the repository is public.
-> —— community discussion #210422
-
-这个结论只说了一半。**把仓库改成公开后，本账号的 cron 依然不投递**，
-继续往下挖才找到真正的分界线 —— 账号类型：
-
-| 对照对象 | 账号类型 | schedule 运行数 | 最近一次 |
+| 仓库 | 账号类型 | schedule 运行数 | 最近一次 |
 |---|---|---|---|
-| `nodejs/node` | **Organization** | 2500 | 2026-10-28T04:21Z ✅ |
-| `facebook/react` | **Organization** | 2500 | 2026-10-28T04:13Z ✅ |
+| `nodejs/node` | **Organization** | 2500 | 2026-10-28T04:59Z ✅ |
+| `facebook/react` | **Organization** | 2500 | 2026-10-28T05:09Z ✅ |
 | `rust-lang/rust` | **Organization** | 469 | 2026-10-28T00:00Z ✅ |
 | `microsoft/vscode` | **Organization** | 143 | 2026-10-27T05:28Z ✅ |
 | `wqifan/AutoWorkbuddy` | **User（个人）** | 0 | — ❌ |
 | `wqifan/AutoWorkbuddy-Trigger`（新建公开仓库） | **User（个人）** | 0 | — ❌ |
 
-也就是说：**GitHub 调度器本身完全正常**（大仓库几分钟前刚跑过），
-但**个人账号（type=User）的 `schedule` 事件整体不投递** ——
+GitHub 调度器**本身完全正常**（大仓库 5 分钟前刚跑过），但**个人账号的 `schedule` 事件整体不投递** ——
 公开也好、私有也好、fork 与否，都一样。
 
-**最终验证方法（10 分钟出结论）**：在任一仓库放一个只 `echo` 的空跑探针
-（`cron: "*/5 * * * *"`，零成本、零副作用），静置 10~40 分钟，
-再看 `event=schedule` 计数。同时对照 `push` / `workflow_dispatch` 是否正常 ——
-如果它们正常而 schedule 为 0，那就是平台不投递，别再改配置了。
+社区结论（[discussion #210422](https://github.com/orgs/community/discussions/210422)）只说了
+「私有仓库需 Pro 或改公开」，改公开后仍不投递 → 真实原因更深一层，是**账号类型**。
 
 > 排查这类问题时的**无效方向**（都核对过，没问题）：
-> cron 表达式语法、UTC 时区换算、workflow 是否在默认分支、
-> `state=active`、`enabled=all`、60 天不活动规则、fork 规则。
-> 这些都会让人以为「配置对了就该跑」，从而在错误的方向上耗掉一整天。
+> cron 表达式语法、UTC 时区换算、workflow 是否在默认分支、`state=active`、
+> `enabled=all`、60 天不活动规则、fork 规则。
+> 这些都会让人以为「配置对了就该跑」，从而在错误方向上耗掉一整天。
+
+**10 分钟出结论的验证方法**：在任一仓库放一个只 `echo` 的空跑探针
+（`cron: "*/5 * * * *"`，零成本零副作用），静置 10~40 分钟看 `event=schedule` 计数；
+同时对照 `push` / `workflow_dispatch` 是否正常 —— 后两者正常而 schedule 为 0，
+就是平台不投递，别再改配置了。
 
 ### 现状与方案
 
-**结论**：个人账号的 GitHub Actions 定时任务不可用，本方案把定时能力放在**本机**。
-
-仓库已按你的决定改为**公开**（`private=false`）。公开前做了逐文件扫描：
-13 个文件全部检查 GitHub token / 邮箱 / 手机号 / 授权码样式，命中的
-`123456@qq.com`、`someone@qq.com` 都是占位符，已改成
-`your-account@qq.com` / `someone@example.com`（example.com 是保留域）。
-真实邮箱只存在于 `.workbuddy/memory/`，该目录在 `.gitignore` 里，从未提交。
-
-| 触发源 | 状态 | 说明 |
+| 通路 | 状态 | 说明 |
 |---|---|---|
-| **本机计划任务** | ✅ 已验证跑通 | 每天 4 个点 + 每次开机，见下 |
-| `workflow_dispatch` API | ✅ 已反复验证 | 手工或外部调用都能立刻跑起来 |
-| GitHub `schedule` | ❌ 个人账号不投递 | 换成组织账号或升级 Pro 才可用 |
+| **A. 本机直接执行** | ✅ **已验证跑通** | 每小时 + 每次登录，电脑开着就一定跑到，不依赖 GitHub |
+| B. GitHub `workflow_dispatch` | ✅ 已反复验证 | 手工或外部调用都能立刻跑起来 |
+| C. GitHub `schedule` | ❌ 个人账号不投递 | 换组织账号或升级 Pro 才可用 |
 
-如果之后愿意把仓库迁到**组织**账号下（组织创建需网页端操作，API 调不通），
-或者升级 GitHub Pro，那么 `daily.yml` 里现成的 `cron: "17 * * * *"`
-会立刻生效，不需要改任何代码。
-
-### 幂等性（敢每小时跑的前提）
-
-1. **推送去重**：只有「真的做了事」的那一轮（签到新领到 / 派出新一趟）才发邮件，
-   一天最多一封。手动验证想每次都推，`push` 选 `always`。
-2. **「当天已派过」判断**：服务端的 `daily_limit_reached` 在派出后仍是 `False`，
-   所以改用「上一趟的 `depart_at` 是否落在今天（北京时间）」来兜底 —— 猫回来得早、
-   状态又变回 idle 时也不会重复派。
-3. **签到由服务端幂等**：`today_checked_in=true` 或 `code=10001` 都判定为「已签」并视为成功。
-
-### 兜底：本机计划任务（已注册，唯一已验证的自动触发）
-
-任务名「Buddy加油站-每日签到」，**5 个触发器**：
-
-- 每天 **07:23 / 12:23 / 18:23 / 21:23**
-- **登录时**（开机 2 分钟后补一次，避开 Windows 登录风暴）
+**主方案是通路 A**：`BuddyCheckin.exe` 在本机直接完成签到、派猫、发邮件。
+理由很简单 —— 既然 GitHub 不按时叫我们，那就自己按闹钟。而且它还顺带解决了
+「token 快过期」的问题：每次运行都重新从客户端登录态取最新 token，
+不必再手动更新 Secret。
 
 ```powershell
+# 查看任务
 Get-ScheduledTask -TaskName "Buddy加油站-每日签到" | Format-List TaskName,State
-Get-ScheduledTaskInfo -TaskName "Buddy加油站-每日签到" | Format-List LastRunTime,LastTaskResult
+Get-ScheduledTaskInfo -TaskName "Buddy加油站-每日签到" | Format-List LastRunTime,LastTaskResult,NextRunTime
+
+# 日志
+Get-Content "$env:LOCALAPPDATA\BuddyCheckin\local.log" -Tail 30
 ```
 
-它跑 `UpdateBuddyToken.exe --only-trigger`，行为是**先查后补**：
-调 API 看今天有没有已经跑过（`success` 或正在 `queued/in_progress`），有就直接退出，
-没有才发一次 `workflow_dispatch`。所以它和云端定时器撞车也不会重复干活。
+**关于 Windows 计划任务的一个坑**（真实踩过）：
+`New-ScheduledTaskTrigger -AtStartup` 需要管理员权限，普通用户注册会报
+「拒绝访问」。改用 `-AtLogOn`（登录时触发）就没问题。
+另外**每日固定时刻的触发器不可靠** —— 实测 `NextRunTime` 会卡在一个已经过去的时间点上，
+那一天的几次全部漏跑。所以最终用的是
+`-Once` + `-RepetitionInterval 1 小时`：错过的周期会被下一个补上，天然自愈。
 
-- 勾了「错过计划开始时间就尽快启动」+「唤醒计算机执行此任务」+ 失败重试 3 次
-- 日志：`%LOCALAPPDATA%\BuddyCheckin\trigger.log`（超过 200KB 自动重置）
-- **不需要任何 PAT，也不落盘任何密码**：它复用本机 git 凭据管理器里已有的 GitHub 凭据，
-  真正的 token / 授权码都只在 GitHub Secrets 里
-- 附带做 **token 续期体检**：Secret 超过 25 天没更新时，自动从本机登录态重新导出并写回
-  （token 有效期约 28 天，这是防止「某天起突然全挂」的关键）
+### 通路 B：云端（需要电脑关机也能跑时）
 
-### 如果某天没跑
+`daily.yml` 里的 `cron: "17 * * * *"` 现成可用，只要定时事件能被投递就会生效。
+让它被投递有两条路：
 
-```bash
-# 看云端有没有跑
-curl -s -H "Authorization: Bearer <token>" \
-  "https://api.github.com/repos/wqifan/AutoWorkbuddy/actions/runs?per_page=5" | grep event
-```
-
-| 现象 | 检查点 |
-|---|---|
-| 云端没有任何运行 | 本机计划任务也没跑 → 看 `%LOCALAPPDATA%\BuddyCheckin\trigger.log` 最后一段的退出码 |
-| 云端有运行但 `failure` | 多半是 token 过期，见「十一」；补跑器会在下次运行自动续期 |
-| 本机任务 `LastTaskResult` 非 0 | 日志里会有具体原因（取不到凭据 / 出口探测失败） |
-| 电脑整天没开机 | 这是本方案唯一的已知缺口 —— 需要外部定时器（见下） |
+1. **升级 GitHub Pro（$4/月）** 或把仓库迁到**组织**账号下 ——
+   组织创建必须在网页端完成，API 调不通（`POST /user/organizations` 不支持）。
+2. **外部定时器**调 `workflow_dispatch`：
+   - `cloudflare-worker/` 里已备好完整代码与部署说明（免费、自带 cron 触发器，与 GitHub 无关）
+   - 另一个备选是 `wqifan/AutoWorkbuddy-Trigger`（公开仓库 + `secrets.TRIGGER_PAT`）
 
 > **关于 cron-job.org**：实测该站注册直接报
 > "An error occurred while creating your account"，且它的 FAQ / help / status 页全部 404
-> —— 是它自己服务端的问题，跟你的操作无关。第三方在线定时器还会多一份 PAT 落在别人手里。
+> —— 是它自己服务端的问题，跟操作无关。
 
-> **如果确实需要「电脑关机也能跑」**：可选 Cloudflare Workers（免费，
-> 自带 cron 触发器）、腾讯云函数、或升级 GitHub Pro / 迁移到组织账号。
-> 三者都需要你额外注册一个账号，所以本方案默认不启用 —— 本机那条路已经覆盖日常使用。
+### 如果某天没跑
 
----
+| 现象 | 检查点 |
+|---|---|
+| 本机任务有记录但没发邮件 | `local.log` 里看 `[邮箱]` 那行的原因（授权码过期 / SMTP 连不上） |
+| 本机任务根本没记录 | 看 `Get-ScheduledTaskInfo` 的 `LastTaskResult`；非 0 说明启动失败 |
+| 电脑上没这任务 | 跑 `python setup_local_task.py` 重新注册 |
+| 想立刻跑一次 | `BuddyCheckin.exe` 或 `python wb_local.py` |
 
 ## 十一、token 到期怎么更新（双击即可）
 
