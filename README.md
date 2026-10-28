@@ -86,7 +86,7 @@ python refresh_token.py --check
 
 | Name | 值 | 必填 |
 |---|---|---|
-| `QQ_MAIL_USER` | 你的 QQ 邮箱，如 `123456@qq.com` | 是 |
+| `QQ_MAIL_USER` | 你的 QQ 邮箱，如 `your-account@qq.com` | 是 |
 | `QQ_MAIL_AUTH_CODE` | 上一步拿到的 16 位授权码 | 是 |
 | `QQ_MAIL_TO` | 收件人，多个用逗号分隔；**留空则发给自己** | 否 |
 
